@@ -105,6 +105,148 @@ class InputService : AccessibilityService() {
         n.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
     }
 
+    // ------------------------------------------------------------ lock screen (see Unlock.kt)
+    private fun roots(): List<AccessibilityNodeInfo> {
+        val out = ArrayList<AccessibilityNodeInfo>()
+        try { for (w in windows) w.root?.let { out.add(it) } } catch (e: Exception) {}
+        if (out.isEmpty()) try { rootInActiveWindow?.let { out.add(it) } } catch (e: Exception) {}
+        return out
+    }
+
+    private fun find(n: AccessibilityNodeInfo?, depth: Int, test: (AccessibilityNodeInfo) -> Boolean): AccessibilityNodeInfo? {
+        if (n == null || depth > 40) return null
+        if (test(n)) return n
+        for (i in 0 until n.childCount) { val hit = find(try { n.getChild(i) } catch (e: Exception) { null }, depth + 1, test); if (hit != null) return hit }
+        return null
+    }
+
+    private fun findAny(test: (AccessibilityNodeInfo) -> Boolean): AccessibilityNodeInfo? {
+        for (r in roots()) { val hit = find(r, 0, test); if (hit != null) return hit }
+        return null
+    }
+
+    private fun label(n: AccessibilityNodeInfo): String = (n.text?.toString()?.trim().takeUnless { it.isNullOrEmpty() } ?: n.contentDescription?.toString()?.trim() ?: "")
+    private fun idOf(n: AccessibilityNodeInfo): String = n.viewIdResourceName?.substringAfterLast('/') ?: ""
+
+    /** Performs one stroke and waits until Android has finished it. */
+    private fun strokePx(points: List<Pair<Float, Float>>, ms: Long): Boolean {
+        if (points.isEmpty()) return false
+        val path = Path()
+        points.forEachIndexed { i, (x, y) -> if (i == 0) path.moveTo(x, y) else path.lineTo(x, y) }
+        if (points.size == 1) path.lineTo(points[0].first + 1f, points[0].second + 1f)
+        val latch = java.util.concurrent.CountDownLatch(1)
+        var ok = false
+        val g = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, ms)).build()
+        val sent = dispatchGesture(g, object : GestureResultCallback() {
+            override fun onCompleted(d: GestureDescription?) { ok = true; latch.countDown() }
+            override fun onCancelled(d: GestureDescription?) { latch.countDown() }
+        }, null)
+        if (!sent) return false
+        latch.await(ms + 1500, java.util.concurrent.TimeUnit.MILLISECONDS)
+        return ok
+    }
+
+    /** Presses a node: the proper click if it (or a parent) offers one, otherwise a tap at its centre. */
+    private fun press(n: AccessibilityNodeInfo): Boolean {
+        var c: AccessibilityNodeInfo? = n
+        var hops = 0
+        while (c != null && hops++ < 4) { if (c.isClickable && c.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true; c = c.parent }
+        val r = android.graphics.Rect(); n.getBoundsInScreen(r)
+        if (r.isEmpty) return false
+        return strokePx(listOf(Pair(r.exactCenterX(), r.exactCenterY())), 60)
+    }
+
+    fun swipeUp() { val (w, h) = size(); strokePx(listOf(Pair(w / 2f, h * 0.86f), Pair(w / 2f, h * 0.55f), Pair(w / 2f, h * 0.28f)), 240) }
+
+    private fun digitKey(d: Char): AccessibilityNodeInfo? {
+        val s = d.toString()
+        return findAny { n -> val id = idOf(n); (id == "key$s" || id == "digit$s" || id == "num$s" || id == "btn_$s") || (label(n) == s && n.className?.toString()?.contains("EditText") != true) }
+    }
+
+    private fun patternView(): AccessibilityNodeInfo? = findAny { n -> val id = idOf(n).lowercase(); val cls = n.className?.toString() ?: ""; cls.contains("LockPatternView") || id.contains("lockpattern") || id == "pattern_view" }
+    private fun passwordField(): AccessibilityNodeInfo? = findAny { n -> n.isEditable || (n.isPassword && n.className?.toString()?.contains("EditText") == true) }
+
+    fun lockInputVisible(kind: String): Boolean = when (kind) {
+        "pattern" -> patternView() != null
+        "password" -> passwordField() != null
+        else -> digitKey('5') != null && digitKey('0') != null
+    }
+
+    fun enterPin(pin: String): Boolean {
+        for (ch in pin) {
+            val k = digitKey(ch) ?: return false
+            if (!press(k)) return false
+            Thread.sleep(130)
+        }
+        return true
+    }
+
+    fun pressLockEnter() {
+        val k = findAny { n -> val id = idOf(n).lowercase(); val l = label(n).lowercase(); id == "key_enter" || id == "enter" || id == "ok" || l == "enter" || l == "ok" || l == "done" || l == "confirm" } ?: return
+        press(k)
+    }
+
+    /** [dots] like "14789": the pattern's dots in order, numbered 1-9 from the top-left. */
+    fun drawPattern(dots: String): Boolean {
+        val v = patternView() ?: return false
+        val r = android.graphics.Rect(); v.getBoundsInScreen(r)
+        if (r.isEmpty) return false
+        val pts = ArrayList<Pair<Float, Float>>()
+        for (ch in dots) {
+            val i = ch - '1'
+            if (i !in 0..8) return false
+            pts.add(Pair(r.left + (i % 3 + 0.5f) * r.width() / 3f, r.top + (i / 3 + 0.5f) * r.height() / 3f))
+        }
+        if (pts.size < 2) return false
+        return strokePx(pts, (160L * pts.size).coerceIn(400L, 2500L))
+    }
+
+    fun enterPassword(pw: String): Boolean {
+        val f = passwordField() ?: return false
+        f.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+        val args = Bundle(); args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, pw)
+        if (!f.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) return false
+        Thread.sleep(200)
+        if (Build.VERSION.SDK_INT >= 30) f.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
+        return true
+    }
+
+    /** A short list of what is on screen, sent to the laptop when the keypad cannot be found, to help fix it. */
+    fun describeScreen(): String {
+        val seen = LinkedHashSet<String>()
+        for (r in roots()) find(r, 0) { n -> val l = label(n); val id = idOf(n); if (l.isNotEmpty() && l.length <= 14) seen.add(l) else if (id.isNotEmpty() && n.isClickable) seen.add("#$id"); seen.size >= 30 }
+        return if (seen.isEmpty()) "(The lock screen did not show its buttons to the app.)" else "(On screen: ${seen.joinToString(", ")})"
+    }
+
+    // ------------------------------------------------------------ "Start sharing without a tap"
+    /**
+     * Presses "Start" on Android's own screen-sharing prompt, choosing "Entire screen" first where Android asks.
+     * Only runs when the owner switched this on in the app, and only for the prompt that names this app.
+     */
+    fun acceptCapturePrompt(timeoutMs: Long) {
+        val end = System.currentTimeMillis() + timeoutMs
+        val entire = Regex("(?i).*(entire|whole) screen.*")
+        val single = Regex("(?i).*(single|one) app.*")
+        val go = Regex("(?i)^(start now|start|share screen|share|start recording|start sharing|next|allow|continue)$")
+        var pickedEntire = false
+        while (System.currentTimeMillis() < end && SetuService.instance?.waitingForConsent == true) {
+            try {
+                val dialog = roots().firstOrNull { r -> val pkg = r.packageName?.toString() ?: ""; pkg != packageName && find(r, 0) { label(it).contains("Setu Remote") } != null }
+                if (dialog != null) {
+                    if (!pickedEntire) {
+                        val opt = find(dialog, 0) { entire.matches(label(it)) }
+                        val spinner = find(dialog, 0) { single.matches(label(it)) }
+                        if (opt != null && (opt.isClickable || opt.parent?.isClickable == true) && spinner == null) { press(opt); pickedEntire = true; Thread.sleep(400); continue }
+                        if (spinner != null) { press(spinner); Thread.sleep(500); findAny { entire.matches(label(it)) }?.let { press(it); pickedEntire = true }; Thread.sleep(500); continue }
+                    }
+                    val btn = find(dialog, 0) { idOf(it) == "button1" && it.isEnabled } ?: find(dialog, 0) { it.isClickable && go.matches(label(it)) }
+                    if (btn != null) { press(btn); Thread.sleep(700); continue }
+                }
+            } catch (e: Exception) { Log.w(TAG, "capture prompt", e) }
+            Thread.sleep(300)
+        }
+    }
+
     private fun typeText(s: String) {
         if (s.isEmpty()) return
         val n = focused() ?: return

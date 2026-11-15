@@ -181,6 +181,18 @@ class MainActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= 33) perm("Show notifications", "Tells you when a file or text arrives.", has(Manifest.permission.POST_NOTIFICATIONS)) {
             askPerms.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
         }
+        perm("Camera", "Lets the laptop look through this phone’s camera. The phone shows a notice while it is on.", has(Manifest.permission.CAMERA)) {
+            askPerms.launch(arrayOf(Manifest.permission.CAMERA))
+        }
+        perm("Unlock from laptop", if (Unlocker.blocked(this)) "The saved PIN or pattern did not work. Tap to save it again." else if (!a11y) "Needs Setu Input (the first item) switched on." else "Keeps your PIN or pattern on this phone, encrypted, and enters it when your laptop asks.", Unlocker.has(this) && !Unlocker.blocked(this)) { promptUnlock() }
+        perm("Start sharing without a tap", "Presses Start on Android’s screen-sharing prompt for you, so the laptop can see this phone when you are away from it.", svc?.autoShare == true) {
+            val s = SetuService.instance
+            if (s != null) {
+                if (s.autoShare) { s.autoShare = false; refresh() }
+                else AlertDialog.Builder(this).setTitle("Start sharing without a tap?").setMessage("Your paired laptop will be able to see and control this phone without anyone touching it. Turn this on only if the laptop is yours alone.")
+                    .setPositiveButton("Turn on") { _, _ -> s.autoShare = true; refresh() }.setNegativeButton("Cancel", null).show()
+            }
+        }
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         perm("No battery limits", "Keeps the phone reachable when the screen is off.", pm.isIgnoringBatteryOptimizations(packageName)) {
             try { startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))) }
@@ -249,6 +261,23 @@ class MainActivity : AppCompatActivity() {
         box.setPadding(dp(20), dp(8), dp(20), 0)
         box.addView(v, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         return box
+    }
+
+    private fun toast(s: String) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show() }
+
+    private fun promptUnlock() {
+        val e = input("PIN, or pattern dots in order", 1)
+        e.inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+        val hint = text("PIN or password: type it as you do on the lock screen.\nPattern: number the dots 1 to 9, left to right from the top row, and type them in the order you draw, for example 14789.\n\nAnyone using your paired laptop will be able to unlock this phone. If it ever fails once, it switches itself off until you save it again.", 13.5f, ink2)
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
+        box.setPadding(dp(20), dp(8), dp(20), 0)
+        box.addView(e); box.addView(hint)
+        val b = AlertDialog.Builder(this).setTitle("Unlock from laptop").setView(box)
+            .setPositiveButton("Save as PIN or password") { _, _ -> val v = e.text.toString(); if (v.isNotEmpty()) { Unlocker.save(this, if (v.all { it.isDigit() }) "pin" else "password", v); toast("Saved"); SetuService.instance?.changed(); refresh() } }
+            .setNeutralButton("Save as pattern") { _, _ -> val v = e.text.toString(); if (v.length >= 4 && v.all { it in '1'..'9' }) { Unlocker.save(this, "pattern", v); toast("Saved"); SetuService.instance?.changed(); refresh() } else toast("A pattern is 4 or more dots, each a digit from 1 to 9") }
+        if (Unlocker.has(this)) b.setNegativeButton("Turn off") { _, _ -> Unlocker.clear(this); SetuService.instance?.changed(); refresh() } else b.setNegativeButton("Cancel", null)
+        b.show()
     }
 
     private fun promptCode() {

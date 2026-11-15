@@ -46,7 +46,11 @@ import androidx.core.content.ContextCompat
 import okhttp3.OkHttpClient
 import org.json.JSONArray
 import org.json.JSONObject
+import org.webrtc.Camera2Capturer
+import org.webrtc.Camera2Enumerator
+import org.webrtc.CameraVideoCapturer
 import org.webrtc.ScreenCapturerAndroid
+import org.webrtc.VideoCapturer
 import org.webrtc.SurfaceTextureHelper
 import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
@@ -73,6 +77,7 @@ class SetuService : Service(), Api {
         const val NID = 1
         const val ACTION_SEND = "app.setu.remote.SEND"
         const val ACTION_STOP_SHARE = "app.setu.remote.STOP_SHARE"
+        const val ACTION_CAM = "app.setu.remote.CAMERA_SCREEN"
 
         fun start(ctx: Context, intent: Intent? = null) {
             val i = intent ?: Intent(ctx, SetuService::class.java)
@@ -91,7 +96,15 @@ class SetuService : Service(), Api {
 
     // screen sharing state
     @Volatile private var projWait: CompletableFuture<Intent>? = null
-    private var capturer: ScreenCapturerAndroid? = null
+    private var capturer: VideoCapturer? = null
+    @Volatile private var capKind = ""          // "screen" or "camera" while something is being sent
+    private var camFacing = "back"
+    @Volatile private var camWait: CompletableFuture<Boolean>? = null
+    val waitingForConsent: Boolean get() = projWait != null
+    val cameraOn: Boolean get() = capKind == "camera" && capPeer != null
+    var autoShare: Boolean
+        get() = prefs.getBoolean("autoShare", false)
+        set(v) { prefs.edit().putBoolean("autoShare", v).apply() }
     private var source: VideoSource? = null
     private var helper: SurfaceTextureHelper? = null
     private var track: VideoTrack? = null
@@ -118,6 +131,13 @@ class SetuService : Service(), Api {
         try { rtc = Rtc(this) } catch (e: Throwable) { Log.e(TAG, "WebRTC failed to start", e) }
         for (p in pairings()) openRoom(p)
         main.postDelayed(updateTick, 45_000L)
+        // Tell the laptop when the phone locks or unlocks, so its "Unlock" button is always right.
+        try {
+            val f = IntentFilter(Intent.ACTION_SCREEN_OFF); f.addAction(Intent.ACTION_USER_PRESENT); f.addAction(Intent.ACTION_SCREEN_ON)
+            registerReceiver(object : android.content.BroadcastReceiver() {
+                override fun onReceive(c: Context?, i: Intent?) { main.postDelayed({ work.execute { try { pc()?.let { if (it.online) it.notify("sys.changed", JSONObject()) } } catch (e: Exception) {} } }, 400) }
+            }, f)
+        } catch (e: Exception) { Log.w(TAG, "screen state receiver", e) }
         main.post { changed() } // the main screen may already be open and showing "Starting…"
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         try {
@@ -128,13 +148,15 @@ class SetuService : Service(), Api {
         (getSystemService(Context.DISPLAY_SERVICE) as DisplayManager).registerDisplayListener(object : DisplayManager.DisplayListener {
             override fun onDisplayAdded(displayId: Int) {}
             override fun onDisplayRemoved(displayId: Int) {}
-            override fun onDisplayChanged(displayId: Int) { if (capturer != null) work.execute { resizeCapture() } }
+            override fun onDisplayChanged(displayId: Int) { if (capturer != null && capKind == "screen") work.execute { resizeCapture() } }
         }, main)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP_SHARE -> work.execute { stopCapture(true) }
+            // The camera screen is in front: Android now allows the camera, so mark the service as using it.
+            ACTION_CAM -> { val f = camWait; if (f != null) { try { goForeground(false, true); f.complete(true) } catch (e: Exception) { f.completeExceptionally(e) } } }
             ACTION_SEND -> {
                 val uris = ArrayList<Uri>()
                 intent?.clipData?.let { c -> for (i in 0 until c.itemCount) c.getItemAt(i).uri?.let { uris.add(it) } }
@@ -210,22 +232,24 @@ class SetuService : Service(), Api {
         val b = NotificationCompat.Builder(this, CH).setSmallIcon(R.drawable.ic_stat).setContentIntent(open).setOngoing(true).setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
         if (sharing != null) {
+            val cam = capKind == "camera"
             val stop = PendingIntent.getService(this, 1, Intent(this, SetuService::class.java).setAction(ACTION_STOP_SHARE), PendingIntent.FLAG_IMMUTABLE)
-            b.setContentTitle("${sharing.name} is viewing this phone").setContentText("Tap Stop to end screen sharing.").addAction(0, "Stop", stop).setColor(0xFFF2A20C.toInt())
+            b.setContentTitle(if (cam) "${sharing.name} is viewing this phone’s camera" else "${sharing.name} is viewing this phone").setContentText(if (cam) "Tap Stop to turn the camera off." else "Tap Stop to end screen sharing.").addAction(0, "Stop", stop).setColor(0xFFF2A20C.toInt())
         } else if (!paired) b.setContentTitle("Setu Remote").setContentText("Not paired yet. Open the app to pair with your laptop.")
         else if (peer != null && peer.online) b.setContentTitle("Connected to ${peer.name}").setContentText("Files, messages and screen are available to your laptop.")
         else b.setContentTitle("Setu Remote").setContentText(if (relayOpen) "Waiting for your laptop to come online." else "Looking for a connection…")
         return b.build()
     }
 
-    private fun goForeground(projection: Boolean) {
+    private fun goForeground(projection: Boolean, camera: Boolean = false) {
         var type = 0
         if (Build.VERSION.SDK_INT >= 29) {
             type = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
             if (projection) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            if (camera && Build.VERSION.SDK_INT >= 30) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
         }
         try { ServiceCompat.startForeground(this, NID, statusNotification(), type) }
-        catch (e: Exception) { Log.e(TAG, "startForeground", e); if (projection) throw IOException("Android did not allow screen sharing to start") }
+        catch (e: Exception) { Log.e(TAG, "startForeground", e); if (projection) throw IOException("Android did not allow screen sharing to start"); if (camera) throw IOException("Android did not allow the camera to start") }
     }
 
     private var eventId = 100
@@ -243,7 +267,7 @@ class SetuService : Service(), Api {
     override fun caps(): JSONObject = JSONObject().put("input", InputService.instance != null).put("files", hasFiles())
         .put("sms", has(Manifest.permission.READ_SMS)).put("notif", NotifService.instance != null)
 
-    override fun onInput(ev: JSONObject, peer: Peer) { if (peer === capPeer) InputService.instance?.perform(ev) }
+    override fun onInput(ev: JSONObject, peer: Peer) { if (peer === capPeer && capKind == "screen") InputService.instance?.perform(ev) }
 
     override fun onVideoEnded(peer: Peer) { if (peer === capPeer) work.execute { stopCapture(false) } }
 
@@ -263,11 +287,15 @@ class SetuService : Service(), Api {
         "clip.set" -> { setClipboard(p.optString("text")); Reply() }
         "screen.start" -> Reply(screenStart(peer))
         "screen.stop" -> { stopCapture(false); Reply() }
+        "cam.start" -> Reply(camStart(peer, p.optString("facing", "back")))
+        "cam.stop" -> { stopCapture(false); Reply() }
+        "dev.unlock" -> { val r = Unlocker.unlock(this); changed(); Reply(r) }
         else -> throw IOException("Not supported: $method")
     }
 
     private fun sysInfo(): JSONObject {
         val o = JSONObject().put("name", selfName).put("model", "${Build.MANUFACTURER} ${Build.MODEL}").put("android", Build.VERSION.RELEASE).put("caps", caps())
+        o.put("locked", Unlocker.locked(this)).put("unlock", Unlocker.ready(this))
         registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))?.let { b ->
             val level = b.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
             val scale = b.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
@@ -454,13 +482,15 @@ class SetuService : Service(), Api {
     // ---------------------------------------------------------------- screen sharing
     private fun screenStart(peer: Peer): JSONObject {
         val r = rtc ?: throw IOException("Video is not available on this phone")
-        if (capturer != null && capPeer === peer) return JSONObject().put("w", capSize.first).put("h", capSize.second).put("input", InputService.instance != null)
-        stopCapture(true)
+        if (capturer != null && capPeer === peer && capKind == "screen") return JSONObject().put("w", capSize.first).put("h", capSize.second).put("input", InputService.instance != null)
+        stopCapture(capPeer !== peer)
         val f = CompletableFuture<Intent>()
         projWait = f
         val ask = Intent(this, ProjectionActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         main.post { try { (InputService.instance ?: this).startActivity(ask) } catch (e: Exception) { Log.w(TAG, "consent screen", e) } }
         eventNoteOnce("${peer.name} wants to see this phone", "Tap here, then tap Start now.", ask)
+        // Switched on by the owner: press Start on Android's prompt for them (they may not be near the phone).
+        if (autoShare) InputService.instance?.let { acc -> work.execute { Thread.sleep(700); acc.acceptCapturePrompt(20_000) } }
         val data = try { f.get(50, TimeUnit.SECONDS) } catch (e: Exception) { projWait = null; throw IOException("Unlock the phone and tap “Start now” to share its screen") }
         getSystemService(NotificationManager::class.java).cancel(99)
         val latch = CountDownLatch(1)
@@ -475,11 +505,57 @@ class SetuService : Service(), Api {
         cap.initialize(hlp, this, src.capturerObserver)
         cap.startCapture(w, h, 24)
         val tr = r.factory.createVideoTrack("screen", src)
-        capturer = cap; source = src; helper = hlp; track = tr; capPeer = peer; capSize = Pair(w, h)
+        capturer = cap; source = src; helper = hlp; track = tr; capPeer = peer; capSize = Pair(w, h); capKind = "screen"
         peer.setVideo(tr)
         changed()
         return JSONObject().put("w", w).put("h", h).put("input", InputService.instance != null)
     }
+
+    // ---------------------------------------------------------------- camera
+    private fun camStart(peer: Peer, facing: String): JSONObject {
+        val r = rtc ?: throw IOException("Video is not available on this phone")
+        if (!has(Manifest.permission.CAMERA)) throw IOException("Allow “Camera” for Setu Remote on the phone")
+        val en = Camera2Enumerator(this)
+        val names = en.deviceNames
+        if (names.isEmpty()) throw IOException("This phone has no camera")
+        val wantFront = facing == "front"
+        val name = names.firstOrNull { en.isFrontFacing(it) == wantFront } ?: names[0]
+        val actual = if (en.isFrontFacing(name)) "front" else "back"
+        val cams = JSONArray(); for (n in names) { val f = if (en.isFrontFacing(n)) "front" else "back"; var dup = false; for (i in 0 until cams.length()) if (cams.optString(i) == f) dup = true; if (!dup) cams.put(f) }
+        val switching = capKind == "camera" && capPeer === peer
+        stopCapture(capPeer != null && capPeer !== peer, keepCameraScreen = switching)
+
+        // Android only lets an app use the camera while it is on screen, so bring the camera notice to the front.
+        if (CameraActivity.current == null || !switching) {
+            val f = CompletableFuture<Boolean>()
+            camWait = f
+            val show = Intent(this, CameraActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            main.post { try { (InputService.instance ?: this).startActivity(show) } catch (e: Exception) { Log.w(TAG, "camera screen", e) } }
+            try { f.get(12, TimeUnit.SECONDS) }
+            catch (e: Exception) { throw IOException("The phone could not bring its camera to the front. Open Setu Remote on the phone and try again.") }
+            finally { camWait = null }
+        }
+        val cap = Camera2Capturer(this, name, object : CameraVideoCapturer.CameraEventsHandler {
+            override fun onCameraError(msg: String?) { Log.w(TAG, "camera error: $msg"); work.execute { stopCapture(true) } }
+            override fun onCameraDisconnected() { work.execute { stopCapture(true) } }
+            override fun onCameraFreezed(msg: String?) { Log.w(TAG, "camera froze: $msg") }
+            override fun onCameraOpening(cameraName: String?) {}
+            override fun onFirstFrameAvailable() {}
+            override fun onCameraClosed() {}
+        })
+        val src = r.factory.createVideoSource(false)
+        val hlp = SurfaceTextureHelper.create("SetuCamera", r.egl.eglBaseContext)
+        cap.initialize(hlp, this, src.capturerObserver)
+        cap.startCapture(1280, 720, 24)
+        val tr = r.factory.createVideoTrack("camera", src)
+        capturer = cap; source = src; helper = hlp; track = tr; capPeer = peer; capSize = Pair(1280, 720); capKind = "camera"; camFacing = actual
+        peer.setVideo(tr)
+        changed()
+        return JSONObject().put("w", 1280).put("h", 720).put("facing", actual).put("cams", cams)
+    }
+
+    /** The Stop button on the phone's camera notice. */
+    fun stopCameraFromPhone() { work.execute { if (capKind == "camera") stopCapture(true) } }
 
     private fun eventNoteOnce(title: String, text: String, open: Intent) {
         val pi = PendingIntent.getActivity(this, 99, open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
@@ -512,10 +588,12 @@ class SetuService : Service(), Api {
     }
 
     @Synchronized
-    private fun stopCapture(tellPeer: Boolean) {
+    private fun stopCapture(tellPeer: Boolean, keepCameraScreen: Boolean = false) {
         val cap = capturer ?: return
         val peer = capPeer
-        capturer = null; capPeer = null
+        val wasCamera = capKind == "camera"
+        capturer = null; capPeer = null; capKind = ""
+        if (wasCamera && !keepCameraScreen) main.post { CameraActivity.current?.finish() }
         try { peer?.setVideo(null) } catch (e: Exception) {}
         try { cap.stopCapture() } catch (e: Exception) {}
         try { cap.dispose() } catch (e: Exception) {}
@@ -524,7 +602,7 @@ class SetuService : Service(), Api {
         try { helper?.dispose() } catch (e: Exception) {}
         track = null; source = null; helper = null
         if (tellPeer) peer?.notify("screen.ended")
-        main.post { try { goForeground(false) } catch (e: Exception) {} }
+        if (!keepCameraScreen) main.post { try { goForeground(false) } catch (e: Exception) {} }
         changed()
     }
 

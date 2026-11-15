@@ -3,5 +3,5 @@
     <string name="app_name">Setu Remote</string>
     <string name="input_label">Setu Input</string>
     <string name="share_label">Send to laptop</string>
-    <string name="input_desc">Lets your paired laptop tap, swipe and type on this phone while you are sharing its screen. It does nothing when no session is running, and it never saves what is on screen.</string>
+    <string name="input_desc">Lets your paired laptop tap, swipe and type on this phone while you are sharing its screen. If you switch those options on in the app, it can also unlock this phone for your laptop and press Start on the screen-sharing prompt. It never saves what is on screen.</string>
 </resources>

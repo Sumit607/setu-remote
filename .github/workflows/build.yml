@@ -70,7 +70,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: SetuRemote-apk, path: SetuRemote.apk }
       - name: Publish to the "android" release
-        if: steps.key.outputs.signed == 'true'
+        if: steps.key.outputs.signed == 'true' && github.ref == 'refs/heads/main'
         run: |
           sha=$(sha256sum SetuRemote.apk | cut -d' ' -f1)
           size=$(stat -c%s SetuRemote.apk)
@@ -109,6 +109,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: SetuRemote-windows, path: desktop/release/SetuRemote-Setup.exe }
       - name: Publish to the "windows" release
+        if: github.ref == 'refs/heads/main'
         run: |
           gh release view windows >/dev/null 2>&1 || gh release create windows --latest=false --title "Setu Remote for Windows" --notes "Always the newest build. The app updates itself from here."
           gh release upload windows release/SetuRemote-Setup.exe --clobber
