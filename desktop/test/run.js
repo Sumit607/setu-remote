@@ -14,7 +14,7 @@ async function until(fn, ms = 15000, what = 'condition') { const t0 = Date.now()
   fs.rmSync(OUT, { recursive: true, force: true }); fs.mkdirSync(OUT, { recursive: true });
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'setu-data-')), dl = path.join(data, 'Downloads', 'Setu'), imp = path.join(data, 'Pictures', 'Phone imports');
   fs.writeFileSync(path.join(data, 'setu.json'), JSON.stringify({ device: { id: '731054862', name: 'Study laptop' }, settings: { downloadDir: dl, importDir: imp, useCloud: false } }));
-  const app = await _electron.launch({ args: ['.', '--no-sandbox'], cwd: ROOT, env: { ...process.env, SETU_DATA: data, SETU_PORT: String(PORT), SETU_NO_TRAY: '1' } });
+  const app = await _electron.launch({ args: ['.', '--no-sandbox'], cwd: ROOT, env: { ...process.env, SETU_DATA: data, SETU_PORT: String(PORT), SETU_NO_TRAY: '1', SETU_FAKE_UNLOCK: '1' } });
   const win = await app.firstWindow(); const errors = [];
   win.on('pageerror', e => errors.push('app: ' + e.message)); win.on('console', m => { if (m.type() === 'error') errors.push('app console: ' + m.text()); });
   await win.setViewportSize({ width: 1280, height: 800 }).catch(() => {});
@@ -133,6 +133,24 @@ async function until(fn, ms = 15000, what = 'condition') { const t0 = Date.now()
     await win.click('[data-act=screen-end]'); await win.waitForSelector('.topgrid');
   });
 
+  await step('Phone camera on the PC: live picture, switch camera, save a photo', async () => {
+    const live = async () => { await win.waitForFunction(() => { const v = document.querySelector('#pvideo'); return window.__setu.ui.screen.state === 'live' && v && v.videoWidth === 640; }, null, { timeout: 20000 });
+      const f1 = await win.evaluate(() => document.querySelector('#pvideo').getVideoPlaybackQuality().totalVideoFrames); await sleep(1200); const f2 = await win.evaluate(() => document.querySelector('#pvideo').getVideoPlaybackQuality().totalVideoFrames); assert(f2 > f1 + 4, `camera frames not advancing (${f1} -> ${f2})`); };
+    await win.click('[data-act=phone-cam]'); await live(); assert(await fp(() => window.__fp.log.cam) === 'back', 'back camera expected');
+    await win.click('[data-act=cam-flip]'); await until(() => fp(() => window.__fp.log.cam === 'front'), 8000, 'front camera'); await live();
+    await win.click('[data-act=cam-shot]'); const saved = await until(async () => { const p = await win.evaluate(() => window.__setu.ui.lastPath); return p && /Phone camera .*\.jpg$/.test(p) && fs.existsSync(p) && fs.statSync(p).size > 3000 ? p : null; }, 6000, 'saved photo');
+    const before = await fp(() => window.__fp.log.input.length); await win.mouse.click(700, 400); await sleep(300); assert(await fp(() => window.__fp.log.input.length) === before, 'camera view must not send taps');
+    await shot('18-phone-camera'); await win.click('[data-act=screen-end]'); await win.waitForSelector('.topgrid'); return path.basename(saved);
+  });
+  await step('Unlock the phone from the PC; opening a locked phone unlocks it first', async () => {
+    await fp(() => window.__fp.setLocked(true)); await win.waitForSelector('[data-act=phone-unlock]:not([disabled])', { timeout: 8000 }); await win.waitForSelector('.badge:has-text("locked")'); await shot('19-phone-locked');
+    await win.click('[data-act=phone-unlock]'); await until(() => fp(() => !window.__fp.locked()), 6000, 'phone to unlock'); await until(async () => !(await win.$('[data-act=phone-unlock]')), 6000, 'Unlock button to go away');
+    await fp(() => window.__fp.setLocked(true)); await win.waitForSelector('[data-act=phone-unlock]:not([disabled])', { timeout: 8000 });
+    await win.click('[data-act=screen]'); await win.waitForFunction(() => { const v = document.querySelector('#pvideo'); return window.__setu.ui.screen.state === 'live' && v && v.videoWidth === 360; }, null, { timeout: 20000 });
+    assert(await fp(() => window.__fp.log.unlocks) === 2 && !(await fp(() => window.__fp.locked())), 'phone should have been unlocked twice');
+    await win.click('[data-act=screen-end]'); await win.waitForSelector('.topgrid');
+  });
+
   // ---------------- phone web controller (no install) controlling the PC
   let web, ctx, code2;
   await step('Web controller: pairs from the QR link served by the PC', async () => {
@@ -172,12 +190,60 @@ async function until(fn, ms = 15000, what = 'condition') { const t0 = Date.now()
     await until(() => win.evaluate(() => document.querySelector('[data-device-name]').value === ''), 4000, 'Ctrl+A then Backspace');
     await win.fill('[data-device-name]', 'Study laptop'); return `pointer moved ${c1.x - c0.x}px, ${c1.y - c0.y}px`;
   });
+  await step('Web controller: zoom the laptop screen (button, pinch, pan), taps stay accurate, view follows the pointer', async () => {
+    const Zs = () => web.evaluate(() => ({ ...window.__setuWeb.Z })); const reset = () => web.evaluate(() => { const w = window.__setuWeb; w.Z.s = 1; w.Z.x = w.Z.y = 0; w.applyZoom(false); });
+    await web.tap('#zbtn'); await until(async () => (await Zs()).s === 2, 2000, 'zoom button to give 2x'); assert((await web.textContent('#zval')) === '2×', 'zoom label');
+    const cdp = await ctx.newCDPSession(web); const T = (type, pts) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map(([x, y], id) => ({ x, y, id })) });
+    // pinch: two fingers 100 px apart moving to 200 px apart doubles the zoom
+    await T('touchStart', [[340, 150]]); await T('touchStart', [[340, 150], [440, 150]]);
+    for (let i = 1; i <= 10; i++) { await T('touchMove', [[340 - i * 5, 150], [440 + i * 5, 150]]); await sleep(16); } await T('touchEnd', []);
+    const z1 = await Zs(); assert(z1.s > 3.6 && z1.s < 4.4, 'pinch zoom ' + JSON.stringify(z1)); await web.screenshot({ path: path.join(OUT, '17-web-zoom.png') });
+    // a tap on the zoomed picture still lands on the right spot of the laptop
+    await reset(); await web.tap('.seg [data-mode=touch]');
+    const target = await win.evaluate(() => { const r = document.querySelector('[data-act=nav][data-view=devices]').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+    const cb = await app.evaluate(({ BrowserWindow, screen }) => ({ b: BrowserWindow.getAllWindows().sort((a, b) => b.getBounds().height - a.getBounds().height)[0].getContentBounds(), s: screen.getPrimaryDisplay().size }));
+    const nx = (cb.b.x + target.x) / cb.s.width, ny = (cb.b.y + target.y) / cb.s.height;
+    const box = () => web.evaluate(() => { const v = document.querySelector('#rv'), r = v.getBoundingClientRect(), sc = Math.min(r.width / v.videoWidth, r.height / v.videoHeight), w = v.videoWidth * sc, h = v.videoHeight * sc; return { x: r.left + (r.width - w) / 2, y: r.top + (r.height - h) / 2, w, h }; });
+    const b0 = await box(); await web.evaluate(([x, y]) => window.__setuWeb.zoomAt(2.5, x, y, false), [b0.x + nx * b0.w, b0.y + ny * b0.h]);
+    let b1 = await box(); assert(b1.w > b0.w * 2.4, 'picture should be 2.5x larger');
+    // slide the zoomed picture so the target sits mid-screen, clear of the on-screen buttons
+    await web.evaluate(([dx, dy]) => { const w = window.__setuWeb; w.Z.x += dx; w.Z.y += dy; w.applyZoom(false); }, [390 - (b1.x + nx * b1.w), 170 - (b1.y + ny * b1.h)]); b1 = await box();
+    const tx = b1.x + nx * b1.w, ty = b1.y + ny * b1.h; assert(tx > 0 && tx < 780 && ty > 64 && ty < 310, `target not in a clear spot ${tx},${ty}`);
+    await web.touchscreen.tap(tx, ty); await until(() => win.evaluate(() => window.__setu.ui.view === 'devices'), 5000, 'zoomed tap to land on Devices').catch(async e => { const c = await win.evaluate(() => window.native.cursor()); throw new Error(`${e.message}; pointer at ${c.x},${c.y}, wanted ${Math.round(cb.b.x + target.x)},${Math.round(cb.b.y + target.y)}; tap ${Math.round(tx)},${Math.round(ty)}; box ${JSON.stringify(b1)}; view ${await win.evaluate(() => window.__setu.ui.view)}`); });
+    // touchpad mode: the zoomed view follows the laptop pointer
+    await web.tap('.seg [data-mode=pad]'); await reset(); await web.evaluate(() => window.__setuWeb.zoomAt(3, 0, 0, false)); assert((await Zs()).x === 0, 'should start at the left edge');
+    await win.evaluate(() => window.native.inject({ k: 'abs', x: 0.95, y: 0.9 }));
+    const z2 = await until(async () => { const z = await Zs(); return z.x < -1000 && z.y < -300 ? z : null; }, 4000, 'view to follow the pointer'); const cur = await web.evaluate(() => window.__setuWeb.st.cur); assert(cur && cur.x > 0.9, 'pointer position from laptop ' + JSON.stringify(cur));
+    // two fingers moving together pan the zoomed picture
+    await T('touchStart', [[300, 150]]); await T('touchStart', [[300, 150], [360, 150]]); for (let i = 1; i <= 10; i++) { await T('touchMove', [[300 + i * 10, 150], [360 + i * 10, 150]]); await sleep(16); } await T('touchEnd', []);
+    const z3 = await Zs(); assert(z3.x > z2.x + 60 && Math.abs(z3.s - 3) < 0.01, 'two-finger pan ' + JSON.stringify([z2, z3]));
+    await web.tap('#zbtn'); await until(async () => (await Zs()).s === 1, 2000, 'zoom button to reset'); return `pinch ${z1.s.toFixed(1)}x, follow to x=${Math.round(z2.x)}`;
+  });
   await step('Stop button on the PC banner ends the session at once', async () => {
     const banner = app.windows().find(w => w !== win); await banner.waitForSelector('#stop'); await banner.screenshot({ path: path.join(OUT, '11-banner.png') }); await shot('12-desktop-during-control');
     await banner.click('#stop'); await until(() => win.evaluate(() => !window.__setu.hosting()), 4000, 'hosting to stop');
     await web.waitForSelector('[data-act=remote]', { timeout: 6000 }); await until(() => app.windows().length === 1, 4000, 'banner to close');
     const before = await win.evaluate(() => window.native.cursor()); await web.evaluate(() => window.__setuWeb.send({ k: 'abs', x: 0.9, y: 0.9 })); await sleep(500); const after = await win.evaluate(() => window.native.cursor());
     assert(before.x === after.x && before.y === after.y, 'input still accepted after Stop');
+  });
+  await step('Web controller: laptop camera streams to the phone, with a notice on the PC', async () => {
+    await web.tap('[data-act=camera]'); await web.waitForFunction(() => { const v = document.querySelector('#rv'); return v && v.videoWidth > 0 && !document.querySelector('.wait'); }, null, { timeout: 25000 });
+    const f1 = await web.evaluate(() => document.querySelector('#rv').getVideoPlaybackQuality().totalVideoFrames); await sleep(1500); const f2 = await web.evaluate(() => document.querySelector('#rv').getVideoPlaybackQuality().totalVideoFrames); assert(f2 > f1 + 5, `camera frames not advancing (${f1} -> ${f2})`);
+    assert(await win.evaluate(() => window.__setu.hosting() && window.__setu.hosting().kind) === 'camera', 'PC should be sharing its camera'); assert(!(await web.$('.keybar')), 'no keyboard row in camera view');
+    await until(() => app.windows().length === 2, 5000, 'notice window'); const note = await app.windows().find(w => w !== win).textContent('#t'); assert(/camera/.test(note), 'notice text: ' + note);
+    await web.screenshot({ path: path.join(OUT, '20-web-laptop-camera.png') }); const dim = await web.evaluate(() => { const v = document.querySelector('#rv'); return v.videoWidth + 'x' + v.videoHeight; });
+    await web.tap('[data-act=leave]'); await until(() => win.evaluate(() => !window.__setu.hosting()), 5000, 'camera to stop'); await web.waitForSelector('[data-act=remote]'); return dim;
+  });
+  await step('Web controller: lock the laptop, then unlock it from the phone', async () => {
+    await web.tap('[data-act=lock]'); await until(() => win.evaluate(() => window.__setu.ui.power.locked), 4000, 'PC to lock'); await web.waitForSelector('.sub:has-text("locked")', { timeout: 6000 });
+    await web.waitForSelector('.note:has-text("Unlock from phone")'); assert(!(await web.$('[data-act=unlock]')), 'no Unlock button before it is set up');
+    await win.click('[data-act=nav][data-view=settings]'); await win.fill('#unlockSecret', '4321'); await win.click('[data-act=unlock-save]'); await until(() => win.evaluate(() => window.__setu.ui.unlock.cred), 4000, 'PIN saved'); await shot('21-settings-unlock');
+    await web.waitForSelector('[data-act=unlock]', { timeout: 6000 }); await web.screenshot({ path: path.join(OUT, '22-web-locked.png') });
+    await web.tap('[data-act=unlock]'); await until(() => win.evaluate(() => !window.__setu.ui.power.locked), 5000, 'PC to unlock'); await until(async () => !(await web.$('.sub:has-text("locked")')), 6000, 'phone to show unlocked');
+    // "Control laptop" on a locked laptop unlocks it first
+    await web.tap('[data-act=lock]'); await web.waitForSelector('[data-act=unlock]', { timeout: 6000 }); await web.tap('[data-act=remote]');
+    await web.waitForFunction(() => { const v = document.querySelector('#rv'); return v && v.videoWidth > 0 && !document.querySelector('.wait'); }, null, { timeout: 25000 }); assert(!(await win.evaluate(() => window.__setu.ui.power.locked)), 'PC should be unlocked');
+    await web.tap('[data-act=leave]'); await until(() => win.evaluate(() => !window.__setu.hosting()), 5000, 'hosting to stop'); await web.waitForSelector('[data-act=remote]');
   });
   await step('Web controller: send a file and text to the PC, browse laptop files', async () => {
     const f = path.join(data, 'from-browser.pdf'); fs.writeFileSync(f, crypto.randomBytes(1500000));
@@ -207,7 +273,7 @@ async function until(fn, ms = 15000, what = 'condition') { const t0 = Date.now()
   });
   await step('Restart: pairings and settings survive, phone reconnects without re-pairing', async () => {
     await app.close();
-    const app2 = await _electron.launch({ args: ['.', '--no-sandbox'], cwd: ROOT, env: { ...process.env, SETU_DATA: data, SETU_PORT: String(PORT), SETU_NO_TRAY: '1' } });
+    const app2 = await _electron.launch({ args: ['.', '--no-sandbox'], cwd: ROOT, env: { ...process.env, SETU_DATA: data, SETU_PORT: String(PORT), SETU_NO_TRAY: '1', SETU_FAKE_UNLOCK: '1' } });
     const w2 = await app2.firstWindow(); await w2.waitForSelector('.brand'); await sleep(14000); console.log('RESTART', JSON.stringify(await w2.evaluate(() => ({ port: window.__setu.state().port, pair: window.__setu.state().store.pairings.length, peers: window.__setu.allPeers().map(p => [p.name, p.role, p.online]), relays: [...window.__setu.rooms.values()].map(r => r.relays.map(x => x.state)) })))); await w2.waitForSelector('.glance', { timeout: 20000 }); assert(/Test Phone/.test(await w2.textContent('.topgrid')), 'phone not back'); await app2.close();
   });
   await step('No JavaScript errors in the app, the simulated phone or the web controller', async () => { const real = errors.filter(e => !/supabase|ERR_TUNNEL|net::ERR/.test(e)); assert(!real.length, real.slice(0, 3).join(' | ')); });

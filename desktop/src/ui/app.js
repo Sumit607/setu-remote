@@ -17,7 +17,7 @@ const isVid = n => /\.(mp4|mkv|mov|3gp|webm)$/i.test(n);
 let S = null;                       // native state {store, lan, port, ...}
 const rooms = new Map();            // secret -> Room
 const ui = { view: 'devices', modal: null, files: { path: '', data: null, sel: new Set(), loading: false, err: '' }, msgs: { threads: null, notifs: [], cur: null, list: null, err: '' },
-  photos: { items: null, err: '', busy: false }, info: {}, screen: { on: false, state: '' }, pairing: null, update: { state: 'off' } };
+  photos: { items: null, err: '', busy: false }, info: {}, screen: { on: false, state: '' }, pairing: null, update: { state: 'off' }, power: { locked: false }, unlock: { supported: false, installed: false, cred: false } };
 let hosting = null;
 const jobs = []; let jobRunning = false;
 const thumbs = new Map();
@@ -38,7 +38,7 @@ const fail = e => { console.error(e); toast(String(e && e.message || e), true); 
 
 function fileStream(id) { return (async function* () { for (;;) { const c = await N.fsRead(id); if (!c) break; yield c; } })(); }
 const handlers = {
-  'sys.info': async () => ({ name: S.store.device.name, role: 'pc', os: S.platform, primary: S.primary }),
+  'sys.info': async () => ({ name: S.store.device.name, role: 'pc', os: S.platform, primary: S.primary, locked: !!ui.power.locked, unlock: !!(ui.unlock.installed && ui.unlock.cred && !ui.unlock.blocked) }),
   'fs.list': p => N.fsList(p.path || '', p.offset | 0, Math.min(p.limit || 500, 1000)),
   'fs.read': async p => { const f = await N.fsOpenRead(p.path); const src = fileStream(f.id); return { size: f.size, mtime: f.mtime, name: f.name, __stream: (async function* () { try { yield* src; } finally { N.fsClose(f.id); } })() }; },
   'fs.write': async (p, peer) => {
@@ -52,8 +52,12 @@ const handlers = {
   'clip.set': async p => { await N.clipSet(p.text); return {}; },
   'clip.get': async () => ({ text: await N.clipGet() }),
   'text.push': async (p, peer) => { await N.clipSet(p.text); addHistory('clipboard', `Text from ${peer.name}`, String(p.text).slice(0, 120)); N.notify('Text from ' + peer.name + ' (copied)', p.text); toast('Text copied to clipboard'); return {}; },
-  'screen.start': async (_p, peer) => startHosting(peer),
+  'screen.start': async (_p, peer) => startHosting(peer, 'screen'),
   'screen.stop': async () => { stopHosting(); return {}; },
+  'cam.start': async (_p, peer) => startHosting(peer, 'camera'),
+  'cam.stop': async () => { stopHosting(); return {}; },
+  'pc.unlock': async (_p, peer) => { const r = await N.unlockNow(); if (!r.already) addHistory('lock', `Unlocked by ${peer.name}`, ''); return r; },
+  'pc.lock': async (_p, peer) => { stopHosting(); await N.pcLock(); addHistory('lock', `Locked by ${peer.name}`, ''); return {}; },
 };
 async function getIce() { return (await N.turnIce()) || undefined; }
 
@@ -94,6 +98,7 @@ function knownDevices() {
 function phone() { const ps = allPeers().filter(p => p.role === 'phone'); return ps.find(p => p.online) || ps[0] || null; }
 const needPhone = () => { const p = phone(); if (!p) throw new Error('Pair the Setu Remote app on your phone first'); if (!p.online) throw new Error(p.name + ' is offline'); return p; };
 async function refreshInfo(p) { try { ui.info[p.id] = await p.request('sys.info', {}, { timeout: 8000 }); if (ui.view !== 'messages') p.request('notif.list', {}).then(r => { ui.msgs.notifs = r.items || []; if (ui.view === 'devices') render(); else renderSide(); }).catch(() => {}); render(); } catch {} }
+function announceChange() { for (const p of allPeers()) if (p.online) try { p.notify('sys.changed'); } catch {} }
 function onEvt(peer, m, p) {
   if (m === 'notif.posted') { ui.msgs.notifs = [p, ...ui.msgs.notifs.filter(n => n.key !== p.key)].slice(0, 60); N.notify(`${p.title || p.app}${p.app ? ' · ' + p.app : ''}`, p.text); if (ui.view === 'messages') render(); renderSide(); }
   else if (m === 'notif.removed') { ui.msgs.notifs = ui.msgs.notifs.filter(n => n.key !== p.key); if (ui.view === 'messages') render(); renderSide(); }
@@ -103,24 +108,32 @@ function onEvt(peer, m, p) {
 }
 
 // ---------------------------------------------------------------- PC being controlled
-async function startHosting(peer) {
-  if (hosting && hosting.peer !== peer) stopHosting();
+async function startHosting(peer, kind = 'screen') {
+  if (hosting && (hosting.peer !== peer || hosting.kind !== kind)) stopHosting(hosting.peer === peer); // same phone switching between screen and camera: swap quietly
   if (!hosting) {
-    const srcId = await N.screenSource();
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: srcId, maxFrameRate: 30 } } });
-    const track = stream.getVideoTracks()[0]; track.contentHint = 'detail';
-    hosting = { peer, track, t0: Date.now(), off: peer.on('video-ended', () => stopHosting()) };
+    let stream;
+    if (kind === 'camera') {
+      try { stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { width: { ideal: 1280 }, height: { ideal: 720 } } }); }
+      catch (e) { throw new Error(e.name === 'NotFoundError' ? 'No camera was found on the laptop' : e.name === 'NotAllowedError' ? 'Windows is blocking the camera. Allow desktop apps to use it in Windows Settings, Privacy, Camera.' : e.name === 'NotReadableError' ? 'The laptop camera is in use by another app' : 'The laptop could not open its camera (' + e.name + ')'); }
+    } else {
+      const srcId = await N.screenSource();
+      stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: srcId, maxFrameRate: 30 } } });
+    }
+    const track = stream.getVideoTracks()[0]; if (kind === 'screen') track.contentHint = 'detail';
+    const h = hosting = { peer, kind, track, t0: Date.now(), off: peer.on('video-ended', () => stopHosting()) };
     await peer.setVideo(track);
-    N.overlay(true, peer.name);
+    N.overlay(true, peer.name, kind);
+    // Tell the phone where the pointer is, so its zoomed view can follow it.
+    if (kind === 'screen') h.cur = setInterval(async () => { try { const c = await N.cursorRel(), k = c.x.toFixed(3) + ',' + c.y.toFixed(3); if (k !== h.ck) { h.ck = k; peer.notify('cursor', { x: +c.x.toFixed(4), y: +c.y.toFixed(4) }); } } catch {} }, 110);
     renderSide();
   }
   const st = hosting.track.getSettings();
-  return { w: st.width, h: st.height };
+  return { w: st.width, h: st.height, kind };
 }
-function stopHosting() {
+function stopHosting(swap) {
   if (!hosting) return;
-  const h = hosting; hosting = null; h.off(); h.track.stop(); h.peer.setVideo(null).catch(() => {}); h.peer.notify('screen.ended'); N.overlay(false);
-  addHistory('phone', `${h.peer.name} controlled this PC`, `for ${Math.max(1, Math.round((Date.now() - h.t0) / 60000))} min`);
+  const h = hosting; hosting = null; h.off(); clearInterval(h.cur); h.track.stop(); h.peer.setVideo(null).catch(() => {}); if (!swap) h.peer.notify('screen.ended'); N.overlay(false);
+  addHistory('phone', h.kind === 'camera' ? `${h.peer.name} viewed this PC's camera` : `${h.peer.name} controlled this PC`, `for ${Math.max(1, Math.round((Date.now() - h.t0) / 60000))} min`);
   renderSide();
 }
 
@@ -196,9 +209,9 @@ function vDevices() {
     const g = (l, v, s) => `<div><span>${l}</span><b>${v}</b><em>${s}</em></div>`;
     top = `<div class="topgrid"><div class="panel">
       <div class="row"><span class="tile peacock">${ic('phone', 'md')}</span><div class="grow"><div class="name">${esc(p.name)}</div><div class="sub">${info ? esc([info.model, info.android && 'Android ' + info.android].filter(Boolean).join(', ')) : 'Phone app'}</div></div>
-      <span class="badge ${p.online ? 'ok' : 'neutral'}"><span class="dot ${p.online ? 'on' : ''}"></span>${p.online ? (Date.now() - p.seenLan < 25000 ? 'Online, same Wi-Fi' : 'Online') : 'Offline'}</span></div>
+      <span class="badge ${p.online ? 'ok' : 'neutral'}"><span class="dot ${p.online ? 'on' : ''}"></span>${p.online ? (info && info.locked ? 'Online, locked' : Date.now() - p.seenLan < 25000 ? 'Online, same Wi-Fi' : 'Online') : 'Offline'}</span></div>
       ${info ? `<div class="glance">${g('Battery', info.battery != null ? info.battery + '%' : '–', info.charging ? 'Charging' : 'On battery')}${g('Storage', info.storageTotal ? fmtSize(info.storageTotal - info.storageFree) : '–', info.storageTotal ? 'of ' + fmtSize(info.storageTotal) + ' used' : '')}${g('Texts', info.smsUnread ?? '–', 'unread')}${g('Chats', ui.msgs.notifs.length, 'new notifications')}</div>` : ''}
-      <div class="row acts"><button class="btn sm primary" data-act="screen" ${p.online ? '' : 'disabled'}>${ic('cast', 'sm')}Show screen</button><button class="btn sm soft" data-act="nav" data-view="files">${ic('folder', 'sm')}Files</button><button class="btn sm soft" data-act="nav" data-view="messages">${ic('mail', 'sm')}Messages</button><button class="btn sm soft" data-act="nav" data-view="photos">${ic('camera', 'sm')}Photos</button></div>
+      <div class="row acts"><button class="btn sm primary" data-act="screen" ${p.online ? '' : 'disabled'}>${ic('cast', 'sm')}Show screen</button><button class="btn sm soft" data-act="phone-cam" ${p.online ? '' : 'disabled'}>${ic('webcam', 'sm')}Camera</button>${info && info.locked ? `<button class="btn sm soft" data-act="phone-unlock" ${p.online && info.unlock ? '' : 'disabled'} title="${info.unlock ? '' : 'Save the phone’s PIN or pattern in the phone app first (Unlock from laptop)'}">${ic('unlock', 'sm')}Unlock</button>` : ''}<button class="btn sm soft" data-act="nav" data-view="files">${ic('folder', 'sm')}Files</button><button class="btn sm soft" data-act="nav" data-view="messages">${ic('mail', 'sm')}Messages</button><button class="btn sm soft" data-act="nav" data-view="photos">${ic('camera', 'sm')}Photos</button></div>
     </div><div class="panel dropzone" id="drop"><span class="tile peacock big">${ic('send', 'lg')}</span><b>Drop files here</b><span class="txt">They go straight to the phone's Download/Setu folder.</span><div class="row center"><button class="btn sm outline" data-act="send-files">Choose files</button><button class="btn sm outline" data-act="send-text">Send text</button></div></div></div>`;
   } else {
     top = `<div class="panel hero"><span class="tile peacock big">${ic('qr', 'lg')}</span><div class="grow"><b>Pair your phone to get started</b><p class="txt">Scan one QR code with your phone. It works with the Setu Remote app, or straight from the phone's browser with nothing to install.</p></div><button class="btn primary auto" data-act="pair">${ic('qr')}Pair a phone</button></div>`;
@@ -331,6 +344,9 @@ function vSettings() {
       ${S.platform === 'win32' ? item('Start Setu Remote when Windows starts', 'It waits quietly in the system tray.', sw('startWithWindows', st.startWithWindows)) : ''}
       ${item('Connect over the internet', 'When off, your devices find each other only on the same Wi-Fi.', sw('useCloud', st.useCloud))}
       ${item('Show a banner while this PC is being controlled', 'Always on, so a live session can\'t go unnoticed.', `<span class="lockpill">${ic('lock', 'sm')}Always on</span>`)}</div>
+    ${ui.unlock.supported ? `<div class="sgroup">Unlock from phone</div><div class="slist">
+      ${item('Let your phone unlock this PC', ui.unlock.installed && ui.unlock.cred ? (ui.unlock.blocked ? 'The saved PIN or password did not work. Save it again.' : 'On. The PIN or password is kept encrypted on this PC only, and typed on the lock screen when your phone asks.') : 'Type exactly what you enter on the Windows lock screen: your PIN if it asks for a PIN, otherwise your password. Windows asks for permission once.', `<input class="field" id="unlockSecret" type="password" autocomplete="off" placeholder="${ui.unlock.cred ? 'New PIN or password' : 'PIN or password'}"><button class="btn sm primary" data-act="unlock-save">Save</button>${ui.unlock.installed ? `<button class="btn sm outline" data-act="unlock-off">Turn off</button>` : ''}`)}
+      ${item('Good to know', 'Anyone holding your unlocked phone can unlock this PC. It only works while the PC is awake; a sleeping or shut-down PC cannot be reached.', '')}</div>` : ''}
     <div class="sgroup">Advanced</div><div class="slist">
       ${item('Relay server', 'Passes encrypted setup messages between your devices.', field('relayUrl', 'https://project.supabase.co'))}
       ${item('Relay key', '', field('relayKey', 'publishable key'))}
@@ -342,39 +358,54 @@ function vSettings() {
 
 // ---------------------------------------------------------------- phone screen viewer
 function vScreen() {
-  const s = ui.screen, p = s.peer; const key = (a, i, l) => `<span data-act="pkey" data-a="${a}">${ic(i, 'md')}${l}</span>`;
-  return `<div class="vbar"><span class="conn"><span class="dot ${s.state === 'live' ? 'on' : ''}"></span><span id="vstate">${s.state === 'live' ? 'Connected' : esc(s.msg || 'Connecting…')}</span></span><span class="vchip" id="vstats"></span><span class="grow"></span><button class="btn sm danger" data-act="screen-end">${ic('stop', 'sm')}End session</button></div>
-   <div class="vbody"><div class="keys"><b>Mouse and keyboard</b><div><span>Tap</span><kbd>Click</kbd></div><div><span>Swipe</span><kbd>Drag</kbd></div><div><span>Back</span><kbd>Right-click</kbd></div><div><span>Home</span><kbd>Middle-click</kbd></div><div><span>Scroll</span><kbd>Wheel</kbd></div><div><span>Type into the phone</span><kbd>Just type</kbd></div><div><span>Paste from PC</span><kbd>Ctrl+V</kbd></div></div>
-   <div class="stage" id="stage" tabindex="0">${s.state === 'live' ? '' : `<div class="wait"><span class="spin light"></span><b>${esc(s.msg || 'Connecting…')}</b><p>${s.state === 'ask' ? `On ${esc(p ? p.name : 'the phone')}, tap “Start now” to share its screen.` : ''}</p></div>`}<video id="pvideo" autoplay playsinline muted></video></div>
-   <div class="rail">${key('back', 'nav-back', 'Back')}${key('home', 'nav-home', 'Home')}${key('recents', 'nav-recents', 'Recents')}<span class="sep"></span>${key('notifications', 'bell', 'Alerts')}${key('volup', 'vol-up', 'Vol +')}${key('voldown', 'vol-down', 'Vol −')}${key('lock', 'lock', 'Lock')}</div></div>`;
+  const s = ui.screen, p = s.peer, cam = s.kind === 'camera'; const key = (a, i, l) => `<span data-act="pkey" data-a="${a}">${ic(i, 'md')}${l}</span>`;
+  const wait = s.state === 'live' ? '' : `<div class="wait"><span class="spin light"></span><b>${esc(s.msg || 'Connecting…')}</b><p>${s.state === 'ask' && !cam ? `If ${esc(p ? p.name : 'the phone')} asks, tap “Start now” to share its screen.` : ''}</p></div>`;
+  return `<div class="vbar"><span class="conn"><span class="dot ${s.state === 'live' ? 'on' : ''}"></span><span id="vstate">${s.state === 'live' ? (cam ? 'Phone camera' : 'Connected') : esc(s.msg || 'Connecting…')}</span></span><span class="vchip" id="vstats"></span><span class="grow"></span><button class="btn sm danger" data-act="screen-end">${ic('stop', 'sm')}End session</button></div>
+   <div class="vbody">${cam
+     ? `<div class="keys"><b>Phone camera</b><p class="txt">The phone shows a notice while its camera is on.</p><button class="btn sm soft" data-act="cam-flip" ${s.state === 'live' ? '' : 'disabled'}>${ic('rotate', 'sm')}${s.facing === 'front' ? 'Use back camera' : 'Use front camera'}</button><button class="btn sm soft" data-act="cam-shot" ${s.state === 'live' ? '' : 'disabled'}>${ic('camera', 'sm')}Save a photo</button></div>`
+     : `<div class="keys"><b>Mouse and keyboard</b><div><span>Tap</span><kbd>Click</kbd></div><div><span>Swipe</span><kbd>Drag</kbd></div><div><span>Back</span><kbd>Right-click</kbd></div><div><span>Home</span><kbd>Middle-click</kbd></div><div><span>Scroll</span><kbd>Wheel</kbd></div><div><span>Type into the phone</span><kbd>Just type</kbd></div><div><span>Paste from PC</span><kbd>Ctrl+V</kbd></div></div>`}
+   <div class="stage" id="stage" tabindex="0">${wait}<video id="pvideo" autoplay playsinline muted></video></div>
+   ${cam ? '<div class="rail"></div>' : `<div class="rail">${key('back', 'nav-back', 'Back')}${key('home', 'nav-home', 'Home')}${key('recents', 'nav-recents', 'Recents')}<span class="sep"></span>${key('notifications', 'bell', 'Alerts')}${key('volup', 'vol-up', 'Vol +')}${key('voldown', 'vol-down', 'Vol −')}${key('lock', 'lock', 'Lock')}</div>`}</div>`;
 }
-async function openViewer() {
+async function unlockPhone(p) { const r = await p.request('dev.unlock', {}, { timeout: 25000 }); if (ui.info[p.id]) ui.info[p.id].locked = false; return r; }
+async function openViewer(kind = 'screen', facing) {
   let p; try { p = needPhone(); } catch (e) { return fail(e); }
-  const s = ui.screen; if (s.on) { ui.view = 'screen'; return render(); }
-  Object.assign(s, { on: true, peer: p, state: 'ask', msg: 'Asking the phone to share its screen…', t0: Date.now(), release: p.hold() });
+  const s = ui.screen; if (s.on && s.kind === kind && !facing) { ui.view = 'screen'; return render(); }
+  if (s.on) closeViewer(false, true);
+  const cam = kind === 'camera', info = ui.info[p.id];
+  Object.assign(s, { on: true, kind, peer: p, state: 'ask', msg: cam ? 'Opening the phone camera…' : 'Asking the phone to share its screen…', t0: Date.now(), release: p.hold(), facing: facing || s.facing || 'back' });
   ui.view = 'screen'; render();
   try {
-    const r = await p.request('screen.start', {}, { timeout: 60000 });
+    if (!cam && info && info.locked && info.unlock) { s.msg = 'Unlocking the phone…'; render(true); await unlockPhone(p); if (!s.on) return; s.msg = 'Asking the phone to share its screen…'; render(true); }
+    const r = cam ? await p.request('cam.start', { facing: s.facing }, { timeout: 30000 }) : await p.request('screen.start', {}, { timeout: 60000 });
     if (!s.on) return;
-    s.state = 'live'; s.size = r; render(true);
+    s.state = 'live'; s.size = r; if (cam && r.facing) s.facing = r.facing; render(true);
   } catch (e) { closeViewer(true); fail(e); }
 }
+async function savePhoto() {
+  const v = $('#pvideo'); if (!v || !v.videoWidth) return;
+  const c = document.createElement('canvas'); c.width = v.videoWidth; c.height = v.videoHeight; c.getContext('2d').drawImage(v, 0, 0);
+  const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.92)), d = new Date(), z = n => String(n).padStart(2, '0');
+  const name = `Phone camera ${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())} ${z(d.getHours())}.${z(d.getMinutes())}.${z(d.getSeconds())}.jpg`;
+  const f = await N.fsOpenWrite(settings().downloadDir, name); await N.fsWrite(f.id, new Uint8Array(await blob.arrayBuffer())); const final = await N.fsClose(f.id, true);
+  ui.lastPath = final || f.path; toast('Photo saved to ' + settings().downloadDir);
+}
 function attachVideo() { const v = $('#pvideo'), s = ui.screen; if (!v || !s.peer || !s.peer.remoteTrack) return; v.srcObject = new MediaStream([s.peer.remoteTrack]); v.play().catch(() => {}); }
-function closeViewer(remote) {
+function closeViewer(remote, stay) {
   const s = ui.screen; if (!s.on) return;
-  if (!remote && s.peer) s.peer.request('screen.stop', {}).catch(() => {});
-  if (s.state === 'live') addHistory('cast', `Viewed ${s.peer.name}'s screen`, `for ${Math.max(1, Math.round((Date.now() - s.t0) / 60000))} min`);
+  if (!remote && s.peer) s.peer.request(s.kind === 'camera' ? 'cam.stop' : 'screen.stop', {}).catch(() => {});
+  if (s.state === 'live') addHistory(s.kind === 'camera' ? 'camera' : 'cast', s.kind === 'camera' ? `Viewed ${s.peer.name}'s camera` : `Viewed ${s.peer.name}'s screen`, `for ${Math.max(1, Math.round((Date.now() - s.t0) / 60000))} min`);
   s.release && s.release(); clearInterval(s.statT);
   Object.assign(s, { on: false, peer: null, state: '', release: null });
-  if (ui.view === 'screen') { ui.view = 'devices'; render(); }
+  if (ui.view === 'screen' && !stay) { ui.view = 'devices'; render(); }
 }
 function bindStage() {
   const stage = $('#stage'), v = $('#pvideo'), s = ui.screen; if (!stage) return;
   if (s.state === 'live') attachVideo();
-  const send = d => s.peer && s.peer.sendInput(d);
+  const send = d => s.peer && s.kind !== 'camera' && s.peer.sendInput(d);
   const pos = e => { const r = v.getBoundingClientRect(); const vw = v.videoWidth || 9, vh = v.videoHeight || 16; const sc = Math.min(r.width / vw, r.height / vh); const w = vw * sc, h = vh * sc; const x = (e.clientX - r.left - (r.width - w) / 2) / w, y = (e.clientY - r.top - (r.height - h) / 2) / h; return [Math.min(1, Math.max(0, x)), Math.min(1, Math.max(0, y)), x >= 0 && x <= 1 && y >= 0 && y <= 1]; };
   let g = null;
-  stage.addEventListener('mousedown', e => { stage.focus(); if (s.state !== 'live') return; e.preventDefault(); const [x, y, inside] = pos(e); if (!inside) return; if (e.button === 2) return send({ k: 'key', a: 'back' }); if (e.button === 1) return send({ k: 'key', a: 'home' }); g = { t0: performance.now(), pts: [[x, y, 0]], moved: false, cx: e.clientX, cy: e.clientY }; });
+  stage.addEventListener('mousedown', e => { stage.focus(); if (s.state !== 'live' || s.kind === 'camera') return; e.preventDefault(); const [x, y, inside] = pos(e); if (!inside) return; if (e.button === 2) return send({ k: 'key', a: 'back' }); if (e.button === 1) return send({ k: 'key', a: 'home' }); g = { t0: performance.now(), pts: [[x, y, 0]], moved: false, cx: e.clientX, cy: e.clientY }; });
   window.onmousemove = e => { if (!g) return; const [x, y] = pos(e); if (Math.hypot(e.clientX - g.cx, e.clientY - g.cy) > 6) g.moved = true; const t = Math.round(performance.now() - g.t0); if (t - g.pts[g.pts.length - 1][2] >= 16) g.pts.push([x, y, t]); };
   window.onmouseup = e => { if (!g) return; const gg = g; g = null; const [x, y] = pos(e), ms = Math.round(performance.now() - gg.t0);
     if (!gg.moved) return send(ms < 450 ? { k: 'tap', x: gg.pts[0][0], y: gg.pts[0][1] } : { k: 'gesture', pts: [gg.pts[0], [gg.pts[0][0], gg.pts[0][1], ms]], ms });
@@ -429,7 +460,11 @@ const actions = {
   'send-files': async () => { try { needPhone(); const paths = await N.pickFiles(); if (paths.length) sendPaths(paths, ''); } catch (e) { fail(e); } },
   'send-text': () => { try { needPhone(); promptText(); } catch (e) { fail(e); } },
   'send-clipboard': async () => { try { await sendText(await N.clipGet()); } catch (e) { fail(e); } },
-  screen: () => openViewer(), 'screen-end': () => closeViewer(false),
+  screen: () => openViewer('screen'), 'screen-end': () => closeViewer(false),
+  'phone-cam': () => openViewer('camera'), 'cam-flip': () => openViewer('camera', ui.screen.facing === 'front' ? 'back' : 'front'), 'cam-shot': () => savePhoto().catch(fail),
+  'phone-unlock': async () => { try { const p = needPhone(); toast('Unlocking the phone…'); await unlockPhone(p); toast('Phone unlocked'); render(); } catch (e) { fail(e); const p = phone(); if (p) refreshInfo(p); } },
+  'unlock-save': async () => { const f = $('#unlockSecret'); if (!f || !f.value) return toast('Type the PIN or password you use on the Windows lock screen', true); try { toast('Windows may ask for permission once. Choose Yes.'); ui.unlock = await N.unlockSetup(f.value); toast('Saved. Your phone can now unlock this PC.'); announceChange(); render(); } catch (e) { fail(e); } },
+  'unlock-off': async () => { try { ui.unlock = await N.unlockRemove(); announceChange(); render(); } catch (e) { fail(e); } },
   pkey: el => ui.screen.peer && ui.screen.peer.sendInput({ k: 'key', a: el.dataset.a }),
   cd: el => { ui.files.data = null; loadFiles(el.dataset.path); render(); },
   sel: (el, e) => { const f = ui.files, p = el.dataset.path; if (!(e.ctrlKey || e.metaKey || e.shiftKey) && !f.sel.has(p) && f.sel.size && e.detail > 1) f.sel.clear(); f.sel.has(p) ? f.sel.delete(p) : f.sel.add(p); render(); },
@@ -469,6 +504,8 @@ N.on('action', a => actions[a] && actions[a]());
   for (const p of S.store.pairings) openRoom(p);
   render();
   setInterval(() => { const p = phone(); if (p && p.online && ui.view === 'devices' && !document.hidden) refreshInfo(p); }, 60000);
+  N.lockState().then(p => { ui.power = p; }); N.unlockStatus().then(u => { ui.unlock = u; });
+  N.on('power', p => { ui.power = p; announceChange(); N.unlockStatus().then(u => { ui.unlock = u; if (ui.view === 'settings') render(); }); });
   window.__setuBusy = () => !!hosting || jobRunning || jobs.some(j => j.state === 'run' || j.state === 'wait') || ui.screen.on;
   N.updateState().then(u => { ui.update = u; }); N.on('update', u => { ui.update = u; if (ui.view === 'settings') render(); });
   window.__setu = { ui, rooms, phone, allPeers, state: () => S, startPairing, hosting: () => hosting, jobs, sendPaths };

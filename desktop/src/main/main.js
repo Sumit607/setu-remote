@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, Tray, Menu, dialog, shell, clipboard, Notification, screen, session, desktopCapturer, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu, dialog, shell, clipboard, Notification, screen, session, desktopCapturer, nativeImage, powerMonitor } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
@@ -10,6 +10,7 @@ const injector = require('./inject');
 
 const TEST = !!process.env.SETU_DATA;
 if (TEST) app.setPath('userData', process.env.SETU_DATA);
+if (TEST) { app.commandLine.appendSwitch('use-fake-device-for-media-stream'); app.commandLine.appendSwitch('use-fake-ui-for-media-stream'); } // a stand-in camera for the tests
 // This is a trusted desktop app: advertise real LAN addresses so phones can connect directly on the same Wi-Fi.
 app.commandLine.appendSwitch('disable-features', 'WebRtcHideLocalIpsWithMdns');
 const ROOT = path.join(__dirname, '..', '..');
@@ -87,9 +88,16 @@ function registerIpc() {
   h('clip:set', t => { clipboard.writeText(String(t || '')); return true; });
   h('notify', (title, body) => { if (store.settings.showNotifications && Notification.isSupported()) { const n = new Notification({ title, body: String(body || '').slice(0, 240), icon: iconPath() }); n.on('click', showWindow); n.show(); } return true; });
   h('cursor', () => screen.getCursorScreenPoint());
+  h('cursor:rel', () => { const p = screen.getCursorScreenPoint(), b = screen.getPrimaryDisplay().bounds; return { x: Math.min(1, Math.max(0, (p.x - b.x) / b.width)), y: Math.min(1, Math.max(0, (p.y - b.y) / b.height)) }; });
+  h('lock:state', () => ({ locked }));
+  h('pc:lock', () => lockNow());
+  h('unlock:status', unlockStatus);
+  h('unlock:setup', unlockSetup);
+  h('unlock:remove', unlockRemove);
+  h('unlock:now', unlockNow);
   h('inject:status', () => injector.status());
   h('autostart', on => { if (process.platform === 'win32') app.setLoginItemSettings({ openAtLogin: !!on, args: ['--hidden'] }); store.settings.startWithWindows = !!on; saveStore(); return true; });
-  h('overlay', (show, name) => { showBanner(show, name); return true; });
+  h('overlay', (show, name, what) => { showBanner(show, name, what); return true; });
   h('turn:ice', turnIce);
   h('screen:source', async () => { const src = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } }); if (!src.length) throw new Error('No screen to share'); return src[0].id; });
   ipcMain.on('inject', (_e, ev) => { try { injector.inject(ev); } catch (e) { console.error('[setu] inject', e.message); } });
@@ -108,6 +116,79 @@ async function turnIce() {
     const j = await r.json(); const ice = Array.isArray(j.iceServers) ? j.iceServers : [j.iceServers];
     turnCache = { at: Date.now(), ice }; return ice;
   } catch (e) { console.error('[setu] TURN credentials failed:', e.message); return null; }
+}
+
+// ---------- lock, and unlock from the phone
+// Windows does not let an ordinary app touch its lock screen. Unlocking is done by a small helper that runs as a
+// Windows service (native/SetuUnlock.cs). It keeps the sign-in PIN or password encrypted on this PC and types it on
+// the lock screen when asked. This app only talks to it over a local pipe.
+let locked = false;
+function watchLock() {
+  const set = v => { locked = v; if (win && !win.isDestroyed()) win.webContents.send('power', { locked }); };
+  try { powerMonitor.on('lock-screen', () => set(true)); powerMonitor.on('unlock-screen', () => set(false)); } catch {}
+  if (TEST && process.env.SETU_FAKE_UNLOCK) ipcMain.handle('test:lock', (_e, v) => { set(!!v); return true; });
+}
+function lockNow() {
+  if (TEST && process.env.SETU_FAKE_UNLOCK) { locked = true; win.webContents.send('power', { locked }); return true; }
+  if (process.platform !== 'win32') throw new Error('Locking works on Windows only');
+  require('child_process').execFile('rundll32.exe', ['user32.dll,LockWorkStation'], () => {});
+  return true;
+}
+const PIPE = '\\\\.\\pipe\\SetuUnlock';
+function pipeCmd(line, timeout = 4000) {
+  return new Promise(res => {
+    let buf = '', done = false, c; const fin = v => { if (done) return; done = true; try { c.destroy(); } catch {} res(v); };
+    try { c = require('net').connect(PIPE); } catch { return res(null); }
+    c.setEncoding('utf8'); c.on('connect', () => c.write(line + '\n')); c.on('data', d => { buf += d; if (buf.includes('\n')) fin(buf.trim()); });
+    c.on('error', () => fin(null)); c.on('close', () => fin(buf.trim() || null)); setTimeout(() => fin(buf.trim() || null), timeout);
+  });
+}
+const helperExe = () => app.isPackaged ? path.join(process.resourcesPath, 'SetuUnlock.exe') : path.join(ROOT, 'native', 'SetuUnlock.exe');
+function runElevated(args) {
+  // One Windows "Do you want to allow this app to make changes?" prompt.
+  const ps = `Start-Process -FilePath '${helperExe().replace(/'/g, "''")}' -ArgumentList ${args.map(a => `'${String(a).replace(/'/g, "''")}'`).join(',')} -Verb RunAs -Wait -WindowStyle Hidden`;
+  return new Promise(res => require('child_process').execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { windowsHide: true }, err => res(!err)));
+}
+const fakeUnlock = { installed: false, cred: false };
+async function unlockStatus() {
+  if (TEST && process.env.SETU_FAKE_UNLOCK) return { supported: true, ...fakeUnlock, locked };
+  if (process.platform !== 'win32') return { supported: false, installed: false, cred: false, locked };
+  const r = await pipeCmd('PING', 1500);
+  if (!r || !r.startsWith('OK')) return { supported: fs.existsSync(helperExe()), installed: false, cred: false, locked };
+  return { supported: true, installed: true, cred: /cred=1/.test(r), blocked: /blocked=1/.test(r), locked };
+}
+async function unlockSetup(secret) {
+  secret = String(secret || ''); if (!secret) throw new Error('Type the PIN or password you use on the Windows lock screen');
+  if (TEST && process.env.SETU_FAKE_UNLOCK) { fakeUnlock.installed = fakeUnlock.cred = true; fakeUnlock.secret = secret; return unlockStatus(); }
+  if (process.platform !== 'win32') throw new Error('Unlocking works on Windows only');
+  if (!fs.existsSync(helperExe())) throw new Error('The unlock helper is missing from this build');
+  let st = await unlockStatus();
+  if (!st.installed) {
+    const sid = await new Promise(res => require('child_process').execFile('whoami', ['/user', '/fo', 'csv', '/nh'], { windowsHide: true }, (e, out) => res(((out || '').match(/S-1-[0-9-]+/) || [''])[0])));
+    if (!sid) throw new Error('Could not read your Windows account');
+    await runElevated(['--install', sid]);
+    for (let i = 0; i < 20 && !st.installed; i++) { await new Promise(r => setTimeout(r, 500)); st = await unlockStatus(); }
+    if (!st.installed) throw new Error('The unlock helper was not installed. Windows asks for permission once; choose Yes.');
+  }
+  const r = await pipeCmd('SET ' + Buffer.from(secret, 'utf8').toString('base64'));
+  if (!r || !r.startsWith('OK')) throw new Error('The helper could not save it' + (r ? ': ' + r : ''));
+  return unlockStatus();
+}
+async function unlockRemove() {
+  if (TEST && process.env.SETU_FAKE_UNLOCK) { fakeUnlock.installed = fakeUnlock.cred = false; return unlockStatus(); }
+  await pipeCmd('CLEAR'); await runElevated(['--uninstall']);
+  await new Promise(r => setTimeout(r, 800)); return unlockStatus();
+}
+async function unlockNow() {
+  if (TEST && process.env.SETU_FAKE_UNLOCK) { if (!fakeUnlock.cred) throw new Error('Unlocking is not set up on the laptop'); locked = false; win.webContents.send('power', { locked }); return { ok: true }; }
+  if (!locked) { const st = await unlockStatus(); if (!st.installed) return { ok: true, already: true }; }
+  const r = await pipeCmd('UNLOCK', 20000);
+  if (!r) throw new Error('Unlocking is not set up on the laptop. Turn on “Unlock from phone” in its Settings.');
+  if (r.startsWith('OK')) return { ok: true, already: /already/.test(r) };
+  if (/nocred/.test(r)) throw new Error('No PIN or password is saved on the laptop yet');
+  if (/blocked/.test(r)) throw new Error('The saved PIN or password did not work last time. Save it again in the laptop app to try again.');
+  if (/stilllocked/.test(r)) throw new Error('The laptop stayed locked. Check the saved PIN or password in the laptop app.');
+  throw new Error('The laptop could not unlock: ' + r);
 }
 
 // ---------- self-update
@@ -160,14 +241,14 @@ function createWindow() {
   win.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:/.test(url)) shell.openExternal(url); return { action: 'deny' }; });
 }
 function showWindow() { if (!win) return; if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
-function showBanner(show, name) {
+function showBanner(show, name, what) {
   if (!show) { if (banner) { banner.destroy(); banner = null; } return; }
-  if (banner) return;
+  if (banner) { banner.destroy(); banner = null; }
   const { width } = screen.getPrimaryDisplay().workAreaSize, w = 500, hgt = 52;
   banner = new BrowserWindow({ width: w, height: hgt, x: Math.round((width - w) / 2), y: 10, frame: false, resizable: false, movable: true, alwaysOnTop: true, skipTaskbar: true,
     focusable: false, show: false, backgroundColor: '#F2A20C', webPreferences: { preload: path.join(__dirname, 'banner-preload.js'), contextIsolation: true } });
   banner.setAlwaysOnTop(true, 'screen-saver');
-  banner.loadFile(path.join(ROOT, 'src', 'ui', 'banner.html'), { query: { name: name || 'Your phone' } });
+  banner.loadFile(path.join(ROOT, 'src', 'ui', 'banner.html'), { query: { name: name || 'Your phone', what: what === 'camera' ? 'camera' : 'screen' } });
   banner.once('ready-to-show', () => banner && banner.showInactive());
   banner.on('closed', () => { banner = null; });
 }
@@ -198,7 +279,7 @@ else {
     });
     try { relay = await startRelay({ port: Number(process.env.SETU_PORT) || 47800, webRoot: path.join(ROOT, 'dist', 'web') }); }
     catch (e) { console.error('[setu] LAN relay failed to start:', e.message); }
-    createTray(); createWindow(); initUpdater();
+    createTray(); createWindow(); initUpdater(); watchLock();
   });
   app.on('before-quit', () => { quitting = true; });
   app.on('window-all-closed', () => { if (!tray) app.quit(); });

@@ -49,10 +49,19 @@ function startScreen() {
   draw(); const timer = setInterval(draw, 66);
   const stream = c.captureStream(15); screen = { track: stream.getVideoTracks()[0], timer }; return screen;
 }
+let cam = null, locked = false;
+function startCam(facing) {
+  stopCam();
+  const c = document.createElement('canvas'); c.width = 640; c.height = 480; const g = c.getContext('2d'); let n = 0;
+  const draw = () => { g.fillStyle = facing === 'front' ? '#3A2A55' : '#1F3B2C'; g.fillRect(0, 0, 640, 480); g.fillStyle = '#fff'; g.font = '600 30px sans-serif'; g.fillText('Simulated ' + facing + ' camera', 30, 70); g.font = '80px sans-serif'; g.fillText(String(n++), 30, 200); };
+  draw(); const timer = setInterval(draw, 66);
+  cam = { track: c.captureStream(15).getVideoTracks()[0], timer, facing }; log.cam = facing; return cam;
+}
+function stopCam() { if (!cam) return; clearInterval(cam.timer); cam.track.stop(); cam = null; }
 function stopScreen(peer) { if (!screen) return; clearInterval(screen.timer); screen.track.stop(); screen = null; peer && peer.setVideo(null).catch(() => {}); }
 
 const handlers = {
-  'sys.info': async () => ({ name: 'Test Phone', model: 'vivo V60 (simulated)', android: '16', battery: 78, charging: true, storageTotal: 128e9, storageFree: 54e9, smsUnread: Object.values(sms).reduce((a, t) => a + t.unread, 0), caps: { input: true, files: true, sms: true, notif: true } }),
+  'sys.info': async () => ({ locked, unlock: true, name: 'Test Phone', model: 'vivo V60 (simulated)', android: '16', battery: 78, charging: true, storageTotal: 128e9, storageFree: 54e9, smsUnread: Object.values(sms).reduce((a, t) => a + t.unread, 0), caps: { input: true, files: true, sms: true, notif: true } }),
   'fs.list': async p => { if (!p.path) return { path: '', parent: null, total: roots.length, entries: roots.map(r => ({ ...r, d: true })), roots, places };
     const all = list(p.path); const off = p.offset | 0, lim = p.limit || 500; return { path: p.path, parent: p.path === ROOT ? '' : dirOf(p.path), total: all.length, entries: all.slice(off, off + lim), roots, places }; },
   'fs.read': async p => { const f = files.get(p.path); if (!f) throw new Error('File not found'); return { size: f.data.length, mtime: f.m, name: baseOf(p.path), __stream: (async function* () { for (let o = 0; o < f.data.length; o += 262144) yield f.data.subarray(o, o + 262144); })() }; },
@@ -67,7 +76,10 @@ const handlers = {
   'notif.reply': async p => { const n = notifs.find(x => x.key === p.key); if (!n || !n.reply) throw new Error('This notification can no longer be replied to'); log.replies.push(p); notifs = notifs.filter(x => x !== n); return { ok: true }; },
   'text.push': async p => { log.texts.push(p.text); log.clip = p.text; return {}; },
   'clip.set': async p => { log.clip = p.text; return {}; },
-  'screen.start': async (_p, peer) => { const s = startScreen(); await peer.setVideo(s.track); return { w: 360, h: 780 }; },
+  'cam.start': async (p, peer) => { stopScreen(); const c = startCam(p.facing === 'front' ? 'front' : 'back'); await peer.setVideo(c.track); return { w: 640, h: 480, facing: c.facing, cams: ['back', 'front'] }; },
+  'cam.stop': async (_p, peer) => { stopCam(); peer.setVideo(null).catch(() => {}); return {}; },
+  'dev.unlock': async () => { if (!locked) return { ok: true, already: true }; locked = false; log.unlocks = (log.unlocks || 0) + 1; return { ok: true }; },
+  'screen.start': async (_p, peer) => { stopCam(); const s = startScreen(); await peer.setVideo(s.track); return { w: 360, h: 780 }; },
   'screen.stop': async (_p, peer) => { stopScreen(peer); return {}; },
 };
 
@@ -87,6 +99,7 @@ async function boot() {
     smsIn: (addr, body) => { const t = (sms[addr] ||= { name: '', msgs: [], unread: 0 }); t.msgs.push({ id: Date.now(), body, ts: Date.now(), out: false }); t.unread++; return pc().notify('sms.received', { addr, name: t.name, body, ts: Date.now() }); },
     sendToPc: async (name, size, sd) => { const data = randomBytes(size, sd); const r = await pc().push('fs.write', { name, mtime: Date.now() }, (async function* () { for (let o = 0; o < data.length; o += 262144) yield data.subarray(o, o + 262144); })(), size); return { path: r.path, hash: hex(sha256(data)) }; },
     textToPc: t => pc().request('text.push', { text: t }),
+    setLocked: v => { locked = !!v; return pc().notify('sys.changed'); }, locked: () => locked,
   };
 }
 boot();
