@@ -10,11 +10,11 @@ adb shell pm grant $PKG android.permission.POST_NOTIFICATIONS || true
 adb shell am start -W -n $PKG/.MainActivity 2>&1 | tee "$OUT/start.txt"
 sleep 12
 adb exec-out screencap -p > "$OUT/01-main.png"
-# Scroll down to the permission list and the version line.
-adb shell input swipe 500 1500 500 300 300; sleep 2
-adb exec-out screencap -p > "$OUT/02-permissions.png"
-adb shell input swipe 500 1500 500 300 300; sleep 2
-adb exec-out screencap -p > "$OUT/03-bottom.png"
+# Scroll down to the permission list and the version line (coordinates relative to the screen size).
+read -r W H < <(adb shell wm size | tr -d '\r' | sed -E 's/.*: ([0-9]+)x([0-9]+)/\1 \2/')
+swipe() { adb shell input swipe $((W/2)) $((H*4/5)) $((W/2)) $((H/5)) 400; sleep 2; }
+swipe; adb exec-out screencap -p > "$OUT/02-permissions.png"
+swipe; swipe; adb exec-out screencap -p > "$OUT/03-bottom.png"
 pid=$(adb shell pidof $PKG | tr -d '\r')
 svc=$(adb shell dumpsys activity services $PKG | grep -c "SetuService" || true)
 adb logcat -d > "$OUT/logcat-full.txt"

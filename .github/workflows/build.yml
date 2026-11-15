@@ -215,25 +215,26 @@ jobs:
           npm run dist
           powershell -Command "Start-Process -FilePath 'release\SetuRemote-Setup.exe' -ArgumentList '/S' -Wait"
           sleep 5
-          reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall" //s //f "Setu Remote" | tee "$RUNNER_TEMP/before.txt" || true
       - name: Start it and wait for the update
         timeout-minutes: 14
         run: |
+          set +e
           exe=$(find "$LOCALAPPDATA/Programs" -maxdepth 2 -name "Setu Remote.exe" | head -1)
           echo "installed at: $exe"
           want="0.1.$BUILD"
+          # Start the old version once and leave it alone. It should find the new build, install it silently and restart itself.
+          powershell -Command "Start-Process -FilePath '$exe'"
           ok=no
-          for i in $(seq 1 80); do
-            # After a silent update the app restarts itself; start it if it is not running.
-            (tasklist 2>/dev/null | grep -i "Setu Remote.exe" >/dev/null) || (powershell -Command "Start-Process -FilePath '$exe'" ; echo "started app")
+          for i in $(seq 1 60); do
             sleep 10
-            v=$(reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall" //s //f "Setu Remote" 2>/dev/null | grep -i DisplayVersion | awk '{print $NF}' | head -1 || true)
-            echo "t=$((i*10))s installed version: $v"
-            if [ "$v" = "$want" ]; then ok=yes; break; fi
+            log=$(find "$APPDATA" -maxdepth 2 -name update.log 2>/dev/null | head -1)
+            last=$(tail -n 1 "$log" 2>/dev/null)
+            echo "t=$((i*10))s  $last"
+            if grep -q " $want started" "$log" 2>/dev/null; then ok=yes; break; fi
           done
-          sleep 15
-          tasklist | grep -i "Setu Remote.exe" | head -2 || true
-          echo "RESULT: updated=$ok want=$want got=$v" | tee "$RUNNER_TEMP/result.txt"
+          sleep 25
+          tasklist 2>/dev/null | grep -i "Setu Remote.exe" | head -2
+          echo "RESULT: updated=$ok want=$want" | tee "$RUNNER_TEMP/result.txt"
           [ "$ok" = yes ]
       - name: Save results
         if: always()

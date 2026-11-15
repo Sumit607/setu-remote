@@ -118,6 +118,7 @@ class SetuService : Service(), Api {
         try { rtc = Rtc(this) } catch (e: Throwable) { Log.e(TAG, "WebRTC failed to start", e) }
         for (p in pairings()) openRoom(p)
         main.postDelayed(updateTick, 45_000L)
+        main.post { changed() } // the main screen may already be open and showing "Starting…"
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         try {
             cm.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
