@@ -10,15 +10,13 @@ ver() { adb shell dumpsys package $PKG | grep -m1 versionName | tr -d '\r' | sed
 adb shell getprop ro.product.cpu.abilist | tee "$OUT/abis.txt"
 adb logcat -c
 adb install -r "$APK" 2>&1 | tee "$OUT/install.txt"
+installed=$(ver); echo "installed version: $installed"
 adb shell pm grant $PKG android.permission.POST_NOTIFICATIONS || true
 # What you switch on with "App updates" in the app.
 adb shell appops set $PKG REQUEST_INSTALL_PACKAGES allow || true
 adb shell am start -W -n $PKG/.MainActivity 2>&1 | tee "$OUT/start.txt"
 sleep 10
 adb exec-out screencap -p > "$OUT/01-main.png"
-pid=$(adb shell pidof $PKG | tr -d '\r')
-svc=$(adb shell dumpsys activity services $PKG | grep -c "SetuService" || true)
-first=$(ver)
 read -r W H < <(adb shell wm size | tr -d '\r' | sed -E 's/.*: ([0-9]+)x([0-9]+)/\1 \2/')
 swipe() { adb shell input swipe $((W/2)) $((H*4/5)) $((W/2)) $((H/5)) 400; sleep 2; }
 
@@ -32,11 +30,13 @@ for i in $(seq 1 36); do
 done
 adb exec-out screencap -p > "$OUT/03-after-wait.png"
 adb shell am start -W -n $PKG/.MainActivity >/dev/null 2>&1; sleep 6
+pid=$(adb shell pidof $PKG | tr -d '\r')
+svc=$(adb shell dumpsys activity services $PKG | grep -c "SetuService" || true)
 swipe; swipe; swipe; adb exec-out screencap -p > "$OUT/04-bottom.png"
 adb logcat -d > "$OUT/logcat-full.txt"
 grep -E "FATAL EXCEPTION|AndroidRuntime|SetuUpdate|PackageInstaller|app.setu.remote" "$OUT/logcat-full.txt" | grep -vE "AppsFilter|WindowManager|CoreBackPreview" | tail -n 250 > "$OUT/logcat.txt"
 fatal=$(grep -c "FATAL EXCEPTION" "$OUT/logcat-full.txt" || true)
 rm -f "$OUT/logcat-full.txt"
 adb shell dumpsys package $PKG | grep -E "versionName|versionCode|targetSdk" | head -3 > "$OUT/version.txt"
-echo "RESULT: pid=${pid:-none} service_lines=$svc fatal_exceptions=$fatal first_version=$first self_update=$updated want=$WANT now=$(ver)" | tee "$OUT/result.txt"
+echo "RESULT: pid=${pid:-none} service_lines=$svc fatal_exceptions=$fatal installed_version=$installed self_update=$updated want=$WANT now=$(ver)" | tee "$OUT/result.txt"
 [ -n "$pid" ] && [ "$fatal" = "0" ]
