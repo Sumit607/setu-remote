@@ -152,6 +152,7 @@ jobs:
   # First real run of the Android app: install it on an emulator, open it, and save a screenshot and the log
   # to the ci-android-smoke branch. Never blocks publishing.
   android-smoke:
+    needs: android
     runs-on: ubuntu-latest
     timeout-minutes: 30
     continue-on-error: true
@@ -172,9 +173,22 @@ jobs:
         with: { distribution: temurin, java-version: 17 }
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: '8.10.2' }
-      - name: Build a test APK that also runs on the emulator
+      - name: Signing key
+        env:
+          SETU_SIGNING: ${{ secrets.SETU_SIGNING }}
+        run: |
+          if [ -n "$SETU_SIGNING" ]; then
+            pw="${SETU_SIGNING%%:*}"
+            echo "::add-mask::$pw"
+            printf '%s' "${SETU_SIGNING#*:}" | base64 -d > "$RUNNER_TEMP/setu.jks"
+            echo "SETU_KEYSTORE_FILE=$RUNNER_TEMP/setu.jks" >> "$GITHUB_ENV"
+            echo "SETU_KEYSTORE_PASSWORD=$pw" >> "$GITHUB_ENV"
+          fi
+      # An old version (0.1.1) signed with the real key, so the emulator run can also show the app updating itself
+      # to the build the android job just published.
+      - name: Build an old test APK that also runs on the emulator
         working-directory: android
-        run: gradle :app:assembleDebug -PbuildNumber=$BUILD -PemulatorAbi=1 --no-daemon
+        run: gradle :app:assembleRelease -PbuildNumber=1 -PemulatorAbi=1 --no-daemon
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
