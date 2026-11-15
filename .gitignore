@@ -1,0 +1,13 @@
+node_modules/
+desktop/dist/
+desktop/release/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/app/src/main/assets/web/*
+!android/app/src/main/assets/web/README.txt
+*.log
+.DS_Store
+test-report/
+Setu-Remote-test-report.html

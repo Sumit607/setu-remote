@@ -1,0 +1,86 @@
+{
+  "name": "setu-remote",
+  "productName": "Setu Remote",
+  "version": "0.1.0",
+  "description": "Control your phone from your laptop and your laptop from your phone",
+  "author": "Sumit Ghode",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "node build.js && electron .",
+    "test": "node build.js --test && node test/run.js",
+    "dist": "node build.js --min && electron-builder --win nsis --x64 --publish never -c.win.signAndEditExecutable=true",
+    "build": "node build.js --min",
+    "dist:zip": "node build.js --min && electron-builder --win zip --x64 --publish never"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11",
+    "koffi": "^2.9.0",
+    "qrcode": "^1.5.4",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@noble/ciphers": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
+    "electron": "^45.3.2",
+    "electron-builder": "^26.0.0",
+    "esbuild": "^0.28.2",
+    "playwright-core": "^1.65.1"
+  },
+  "build": {
+    "appId": "in.sumitghode.setu-remote",
+    "productName": "Setu Remote",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/app/**",
+      "dist/web/**",
+      "src/main/**",
+      "src/ui/banner.html",
+      "assets/**",
+      "package.json",
+      "!node_modules/koffi/build/koffi/{darwin*,linux*,freebsd*,openbsd*,musl*,win32_ia32,win32_arm64}/**",
+      "!node_modules/koffi/{src,vendor,doc,lib}/**"
+    ],
+    "asarUnpack": [
+      "node_modules/koffi/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "shortcutName": "Setu Remote",
+      "artifactName": "SetuRemote-Setup.${ext}",
+      "differentialPackage": false
+    },
+    "electronLanguages": [
+      "en-US",
+      "en-GB",
+      "hi"
+    ],
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://github.com/Sumit607/setu-remote/releases/download/windows/"
+      }
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Sumit607/setu-remote.git"
+  }
+}

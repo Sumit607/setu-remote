@@ -1,0 +1,10 @@
+{
+  "cleanUrls": true,
+  "redirects": [
+    { "source": "/apk", "destination": "https://github.com/Sumit607/setu-remote/releases/download/android/SetuRemote.apk", "permanent": false },
+    { "source": "/pc", "destination": "https://github.com/Sumit607/setu-remote/releases/download/windows/SetuRemote-Setup.exe", "permanent": false }
+  ],
+  "headers": [
+    { "source": "/(.*)", "headers": [{ "key": "Cache-Control", "value": "no-store" }, { "key": "X-Robots-Tag", "value": "noindex" }] }
+  ]
+}

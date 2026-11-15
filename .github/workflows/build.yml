@@ -1,0 +1,144 @@
+name: Build and publish
+# Every push to main builds both apps and publishes them to two fixed releases:
+#   "android"  -> SetuRemote.apk + android.json      (the phone app updates itself from here)
+#   "windows"  -> SetuRemote-Setup.exe + latest.yml  (the PC app updates itself from here)
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'site/**', 'test-report/**']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  BUILD: ${{ github.run_number }}
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run: { shell: bash }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Build the "control laptop" screen that the app embeds
+        working-directory: desktop
+        run: |
+          npm ci --ignore-scripts
+          node build.js --min
+          rm -rf ../android/app/src/main/assets/web
+          mkdir -p ../android/app/src/main/assets/web
+          cp -r dist/web/. ../android/app/src/main/assets/web/
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: '8.10.2' }
+      - name: Signing key
+        id: key
+        env:
+          SETU_SIGNING: ${{ secrets.SETU_SIGNING }}
+        run: |
+          if [ -n "$SETU_SIGNING" ]; then
+            pw="${SETU_SIGNING%%:*}"
+            echo "::add-mask::$pw"
+            printf '%s' "${SETU_SIGNING#*:}" | base64 -d > "$RUNNER_TEMP/setu.jks"
+            echo "SETU_KEYSTORE_FILE=$RUNNER_TEMP/setu.jks" >> "$GITHUB_ENV"
+            echo "SETU_KEYSTORE_PASSWORD=$pw" >> "$GITHUB_ENV"
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Secret SETU_SIGNING is not set. Building a test APK to check the code compiles; nothing is published."
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build APK
+        working-directory: android
+        run: gradle :app:assembleRelease -PbuildNumber=$BUILD --no-daemon --stacktrace 2>&1 | tee "$RUNNER_TEMP/build.log"
+      - name: Collect
+        run: |
+          cp android/app/build/outputs/apk/release/app-release.apk SetuRemote.apk
+          ls -la SetuRemote.apk
+      - uses: actions/upload-artifact@v4
+        with: { name: SetuRemote-apk, path: SetuRemote.apk }
+      - name: Publish to the "android" release
+        if: steps.key.outputs.signed == 'true'
+        run: |
+          sha=$(sha256sum SetuRemote.apk | cut -d' ' -f1)
+          size=$(stat -c%s SetuRemote.apk)
+          printf '{"versionCode": %s, "versionName": "0.1.%s", "url": "https://github.com/%s/releases/download/android/SetuRemote.apk", "sha256": "%s", "size": %s, "commit": "%s"}\n' \
+            "$BUILD" "$BUILD" "$GITHUB_REPOSITORY" "$sha" "$size" "$GITHUB_SHA" > android.json
+          cat android.json
+          gh release view android >/dev/null 2>&1 || gh release create android --latest=false --title "Setu Remote for Android" --notes "Always the newest build. The app updates itself from here."
+          gh release upload android SetuRemote.apk --clobber
+          gh release upload android android.json --clobber
+      - name: Save the log if the build failed
+        if: failure()
+        run: |
+          mkdir -p "$RUNNER_TEMP/log" && cd "$RUNNER_TEMP/log" && git init -q -b ci-log-android
+          tail -c 300000 "$RUNNER_TEMP/build.log" > build.log 2>/dev/null || echo "no gradle log" > build.log
+          git add . && git -c user.name=ci -c user.email=ci@users.noreply.github.com commit -qm "android build $BUILD failed"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}" ci-log-android
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run: { shell: bash, working-directory: desktop }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Install
+        run: npm ci 2>&1 | tee "$RUNNER_TEMP/build.log"
+      - name: Build installer
+        run: |
+          npm version "0.1.$BUILD" --no-git-tag-version --allow-same-version
+          npm run dist 2>&1 | tee -a "$RUNNER_TEMP/build.log"
+          node scripts/latest-yml.js
+          ls -la release
+          cat release/latest.yml
+      - uses: actions/upload-artifact@v4
+        with: { name: SetuRemote-windows, path: desktop/release/SetuRemote-Setup.exe }
+      - name: Publish to the "windows" release
+        run: |
+          gh release view windows >/dev/null 2>&1 || gh release create windows --latest=false --title "Setu Remote for Windows" --notes "Always the newest build. The app updates itself from here."
+          gh release upload windows release/SetuRemote-Setup.exe --clobber
+          gh release upload windows release/latest.yml --clobber
+      - name: Save the log if the build failed
+        if: failure()
+        working-directory: ${{ runner.temp }}
+        run: |
+          mkdir -p log && cd log && git init -q -b ci-log-windows
+          tail -c 300000 ../build.log > build.log 2>/dev/null || echo "no log" > build.log
+          git add . && git -c user.name=ci -c user.email=ci@users.noreply.github.com commit -qm "windows build $BUILD failed"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}" ci-log-windows
+
+  # The same 25-step end-to-end suite, on real Windows (screen capture and mouse/keyboard injection).
+  # Its result and screenshots go to the ci-windows-test branch. It never blocks publishing.
+  windows-test:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    continue-on-error: true
+    defaults:
+      run: { shell: bash, working-directory: desktop }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Install
+        run: npm ci
+      - name: End-to-end tests
+        timeout-minutes: 10
+        run: npm test 2>&1 | tee "$RUNNER_TEMP/test.log"
+      - name: Save results
+        if: always()
+        working-directory: ${{ runner.temp }}
+        run: |
+          mkdir -p rep && cd rep && git init -q -b ci-windows-test
+          cp -r "$GITHUB_WORKSPACE/test-report/." . 2>/dev/null || true
+          tail -c 200000 ../test.log > test.log 2>/dev/null || echo "no log" > test.log
+          git add . && git -c user.name=ci -c user.email=ci@users.noreply.github.com commit -qm "windows test, build $BUILD"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}" ci-windows-test

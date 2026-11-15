@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Setu Remote</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { --ink:#14262b; --mute:#566a70; --paper:#f4f6f7; --line:#dce3e6; --peacock:#0e6b74; --deep:#0a4f56; --gold:#f2a20c; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; background: var(--paper); color: var(--ink); font: 17px/1.55 Mukta, "Segoe UI", system-ui, -apple-system, Roboto, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 56px 22px 64px; }
+  .mark { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 19px; color: var(--deep); }
+  .mark svg { width: 44px; height: 22px; }
+  h1 { font-size: clamp(30px, 7vw, 44px); line-height: 1.1; letter-spacing: -.015em; margin: 34px 0 12px; }
+  p.lead { color: var(--mute); margin: 0 0 30px; max-width: 46ch; }
+  a.get { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 20px; margin-top: 12px; border-radius: 14px; text-decoration: none; background: var(--peacock); color: #fff; }
+  a.get.alt { background: #fff; color: var(--ink); border: 1px solid var(--line); }
+  a.get b { display: block; font-size: 19px; }
+  a.get span { display: block; font-size: 14.5px; opacity: .85; }
+  a.get svg { flex: none; width: 24px; height: 24px; }
+  a.get:hover { background: var(--deep); } a.get.alt:hover { background: #fff; border-color: var(--peacock); }
+  a:focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; }
+  h2 { font-size: 18px; margin: 40px 0 8px; }
+  ol { margin: 0; padding-left: 22px; color: var(--mute); } li { margin: 6px 0; } li b, code { color: var(--ink); }
+  code { background: #e7ecee; border-radius: 5px; padding: 1px 6px; font-size: 14.5px; }
+  footer { margin-top: 44px; font-size: 14.5px; color: var(--mute); }
+</style>
+</head>
+<body>
+<main>
+  <div class="mark">
+    <svg viewBox="0 0 44 22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1.5" y="3" width="9" height="16" rx="2.2"/><rect x="26" y="5" width="16" height="11" rx="2"/><path d="M23 19h22M10.5 9c5-6 11-6 15.5 0"/></svg>
+    Setu Remote
+  </div>
+  <h1>Your phone on your laptop, and your laptop on your phone.</h1>
+  <p class="lead">Both links always give the newest build. Once installed, each app updates itself.</p>
+
+  <a class="get" href="/apk">
+    <div><b>Android app</b><span>SetuRemote.apk</span></div>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v12m0 0l-5-5m5 5l5-5M5 20h14"/></svg>
+  </a>
+  <a class="get alt" href="/pc">
+    <div><b>Windows app</b><span>SetuRemote-Setup.exe</span></div>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v12m0 0l-5-5m5 5l5-5M5 20h14"/></svg>
+  </a>
+
+  <h2>First install on the phone</h2>
+  <ol>
+    <li>Open the Android link on the phone and install. If Play Protect blocks it because the app asks for SMS and accessibility access, install from the laptop instead: <code>adb install -r SetuRemote.apk</code></li>
+    <li>In the app, turn on <b>App updates</b> so later versions install by themselves.</li>
+  </ol>
+  <h2>First install on Windows</h2>
+  <ol>
+    <li>Run the installer. Windows shows a warning because the app is not signed by a company: choose <b>More info</b>, then <b>Run anyway</b>.</li>
+    <li>Open Setu Remote, click <b>Pair a phone</b>, and scan the code with the phone app.</li>
+  </ol>
+  <footer>A personal build, made for one laptop and one phone.</footer>
+</main>
+</body>
+</html>
