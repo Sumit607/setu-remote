@@ -104,6 +104,7 @@ function onEvt(peer, m, p) {
   else if (m === 'notif.removed') { ui.msgs.notifs = ui.msgs.notifs.filter(n => n.key !== p.key); if (ui.view === 'messages') render(); renderSide(); }
   else if (m === 'sms.received') { N.notify('Text from ' + (p.name || p.addr), p.body); if (ui.view === 'messages') loadMessages(); if (ui.info[peer.id]) { ui.info[peer.id].smsUnread = (ui.info[peer.id].smsUnread || 0) + 1; renderSide(); } }
   else if (m === 'screen.ended' && ui.screen.peer === peer) closeViewer(true);
+  else if (m === 'cam.error' && ui.screen.peer === peer) { fail(new Error(p.msg || 'The phone sent no camera picture')); closeViewer(true); }
   else if (m === 'sys.changed') refreshInfo(peer);
 }
 
@@ -380,7 +381,18 @@ async function openViewer(kind = 'screen', facing) {
     const r = cam ? await p.request('cam.start', { facing: s.facing }, { timeout: 30000 }) : await p.request('screen.start', {}, { timeout: 60000 });
     if (!s.on) return;
     s.state = 'live'; s.size = r; if (cam && r.facing) s.facing = r.facing; render(true);
+    if (cam) watchCamera(s);
   } catch (e) { closeViewer(true); fail(e); }
+}
+// Backup for when the phone can't tell us why (e.g. the link dropped): warn if no frames arrive.
+function watchCamera(s) {
+  const started = Date.now();
+  const timer = setInterval(() => {
+    if (!s.on || s.kind !== 'camera') return clearInterval(timer);
+    const v = $('#pvideo');
+    if (v && v.videoWidth > 0 && v.getVideoPlaybackQuality && v.getVideoPlaybackQuality().totalVideoFrames > 2) return clearInterval(timer);
+    if (Date.now() - started > 9000) { clearInterval(timer); if (s.on && s.kind === 'camera') { fail(new Error('No picture from the phone camera. On the phone: open Setu Remote, make sure Camera shows “On”, and keep the camera screen in front.')); closeViewer(true); } }
+  }, 1000);
 }
 async function savePhoto() {
   const v = $('#pvideo'); if (!v || !v.videoWidth) return;

@@ -43,7 +43,7 @@ function connect() {
   } });
   st.room.on('peers', () => {
     const pc = [...st.room.peers.values()].find(x => x.role === 'pc') || null;
-    if (pc && pc !== st.pc) { st.pc = pc; pc.on('track', () => attach()); pc.on('link', s => { if (s === 'down' && st.view === 'remote') leaveRemote(true); }); pc.on('evt', (m, q) => { if (m === 'screen.ended' && st.view === 'remote') leaveRemote(true); else if (m === 'cursor') { st.cur = q; followCursor(); } else if (m === 'sys.changed') refreshPc(); }); }
+    if (pc && pc !== st.pc) { st.pc = pc; pc.on('track', () => attach()); pc.on('link', s => { if (s === 'down' && st.view === 'remote') leaveRemote(true); }); pc.on('evt', (m, q) => { if (m === 'screen.ended' && st.view === 'remote') leaveRemote(true); else if (m === 'cam.error' && st.view === 'remote') { leaveRemote(true); fail(new Error(q && q.msg || 'The phone sent no camera picture')); } else if (m === 'cursor') { st.cur = q; followCursor(); } else if (m === 'sys.changed') refreshPc(); }); }
     if (pc && pc.online && !st.info && !st.infoBusy) refreshPc();
     if (pc && !pc.online) st.info = null;
     if (auto && !autoDone && st.view === 'home' && pc && pc.online) { autoDone = true; enterRemote('screen'); return; }

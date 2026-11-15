@@ -98,6 +98,7 @@ class SetuService : Service(), Api {
     @Volatile private var projWait: CompletableFuture<Intent>? = null
     private var capturer: VideoCapturer? = null
     @Volatile private var capKind = ""          // "screen" or "camera" while something is being sent
+    @Volatile private var camFirstFrame = false
     private var camFacing = "back"
     @Volatile private var camWait: CompletableFuture<Boolean>? = null
     val waitingForConsent: Boolean get() = projWait != null
@@ -535,12 +536,13 @@ class SetuService : Service(), Api {
             catch (e: Exception) { throw IOException("The phone could not bring its camera to the front. Open Setu Remote on the phone and try again.") }
             finally { camWait = null }
         }
+        camFirstFrame = false
         val cap = Camera2Capturer(this, name, object : CameraVideoCapturer.CameraEventsHandler {
-            override fun onCameraError(msg: String?) { Log.w(TAG, "camera error: $msg"); work.execute { stopCapture(true) } }
-            override fun onCameraDisconnected() { work.execute { stopCapture(true) } }
-            override fun onCameraFreezed(msg: String?) { Log.w(TAG, "camera froze: $msg") }
+            override fun onCameraError(msg: String?) { Log.w(TAG, "camera error: $msg"); camError(peer, if (msg.isNullOrBlank()) "The phone could not open its camera." else "The phone’s camera reported: $msg") }
+            override fun onCameraDisconnected() { camError(peer, "Another app took the phone’s camera.") }
+            override fun onCameraFreezed(msg: String?) { Log.w(TAG, "camera froze: $msg"); camError(peer, "The phone’s camera stopped responding" + if (msg.isNullOrBlank()) "." else ": $msg") }
             override fun onCameraOpening(cameraName: String?) {}
-            override fun onFirstFrameAvailable() {}
+            override fun onFirstFrameAvailable() { camFirstFrame = true }
             override fun onCameraClosed() {}
         })
         val src = r.factory.createVideoSource(false)
@@ -551,7 +553,14 @@ class SetuService : Service(), Api {
         capturer = cap; source = src; helper = hlp; track = tr; capPeer = peer; capSize = Pair(1280, 720); capKind = "camera"; camFacing = actual
         peer.setVideo(tr)
         changed()
+        // If no frame arrives in a few seconds the picture is black on the laptop; tell it why instead of staying blank.
+        main.postDelayed({ if (capKind == "camera" && capPeer === peer && !camFirstFrame) camError(peer, "The phone opened its camera but sent no picture. On the phone, keep the “your laptop is using this camera” screen open and make sure the Camera permission is on.") }, 6500)
         return JSONObject().put("w", 1280).put("h", 720).put("facing", actual).put("cams", cams)
+    }
+
+    private fun camError(peer: Peer, msg: String) {
+        try { if (peer.online) peer.notify("cam.error", JSONObject().put("msg", msg)) } catch (e: Exception) {}
+        work.execute { if (capKind == "camera") stopCapture(false) }
     }
 
     /** The Stop button on the phone's camera notice. */
