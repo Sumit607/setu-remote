@@ -15,7 +15,8 @@ android {
         val build = (project.findProperty("buildNumber") as String?)?.toIntOrNull() ?: 1
         versionCode = build
         versionName = "0.1.$build"
-        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
+        // -PemulatorAbi adds x86_64 so the CI smoke test can run the app on an emulator; published builds are ARM only.
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") + (if (project.hasProperty("emulatorAbi")) listOf("x86_64") else emptyList()) }
     }
     // One fixed key for every build, so updates install over the previous version and keep their permissions.
     // The key is not in the repository: CI receives it at build time (see .github/workflows/build.yml).

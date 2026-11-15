@@ -315,7 +315,7 @@ function updateLine() {
   const u = ui.update;
   return ({ off: 'Personal build for your own devices.', checking: 'Checking for updates…', current: 'Up to date. New versions install by themselves.',
     downloading: `Downloading version ${esc(u.version)}… ${u.percent || 0}%`, ready: `Version ${esc(u.version)} is ready. It installs when nothing is running, or now if you restart.`,
-    error: `Could not check for updates: ${esc(u.error)}` })[u.state] || '';
+    installing: 'Installing the update…', error: `Could not check for updates: ${esc(u.error)}` })[u.state] || '';
 }
 function vSettings() {
   const st = settings(); const sw = (k, on) => `<button class="switch ${on ? 'on' : ''}" role="switch" aria-checked="${!!on}" data-act="toggle" data-key="${k}"></button>`;

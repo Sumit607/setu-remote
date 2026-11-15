@@ -61,6 +61,12 @@ jobs:
         run: |
           cp android/app/build/outputs/apk/release/app-release.apk SetuRemote.apk
           ls -la SetuRemote.apk
+      - name: Inspect the APK
+        run: |
+          bt=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$bt/aapt2" dump badging SetuRemote.apk | grep -E "^package|sdkVersion|native-code" || true
+          "$bt/apksigner" verify --print-certs SetuRemote.apk | grep -E "SHA-256|DN" || true
+          unzip -l SetuRemote.apk | grep -E "lib/.*\.so|assets/web/(index.html|web.js)|classes.*dex" | awk '{print $1, $4}'
       - uses: actions/upload-artifact@v4
         with: { name: SetuRemote-apk, path: SetuRemote.apk }
       - name: Publish to the "android" release
@@ -142,3 +148,99 @@ jobs:
           tail -c 200000 ../test.log > test.log 2>/dev/null || echo "no log" > test.log
           git add . && git -c user.name=ci -c user.email=ci@users.noreply.github.com commit -qm "windows test, build $BUILD"
           git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}" ci-windows-test
+
+  # First real run of the Android app: install it on an emulator, open it, and save a screenshot and the log
+  # to the ci-android-smoke branch. Never blocks publishing.
+  android-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    defaults:
+      run: { shell: bash }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Build the embedded web screen
+        working-directory: desktop
+        run: |
+          npm ci --ignore-scripts
+          node build.js --min
+          rm -rf ../android/app/src/main/assets/web && mkdir -p ../android/app/src/main/assets/web
+          cp -r dist/web/. ../android/app/src/main/assets/web/
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: '8.10.2' }
+      - name: Build a test APK that also runs on the emulator
+        working-directory: android
+        run: gradle :app:assembleDebug -PbuildNumber=$BUILD -PemulatorAbi=1 --no-daemon
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: Run on the emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          script: bash .github/smoke.sh
+      - name: Save results
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/smoke" && cd "$RUNNER_TEMP/smoke" && git init -q -b ci-android-smoke
+          cp -r "$GITHUB_WORKSPACE/smoke-out/." . 2>/dev/null || echo "no output" > result.txt
+          git add . && git -c user.name=ci -c user.email=ci@users.noreply.github.com commit -qm "android smoke, build $BUILD"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}" ci-android-smoke
+
+  # Proves the PC app updates itself: install an older build, start it, and wait for it to become the build just published.
+  windows-update-test:
+    needs: windows
+    runs-on: windows-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    defaults:
+      run: { shell: bash, working-directory: desktop }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Build and install an old version (0.0.1)
+        run: |
+          npm ci
+          npm version 0.0.1 --no-git-tag-version --allow-same-version
+          npm run dist
+          powershell -Command "Start-Process -FilePath 'release\SetuRemote-Setup.exe' -ArgumentList '/S' -Wait"
+          sleep 5
+          reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall" //s //f "Setu Remote" | tee "$RUNNER_TEMP/before.txt" || true
+      - name: Start it and wait for the update
+        timeout-minutes: 14
+        run: |
+          exe=$(find "$LOCALAPPDATA/Programs" -maxdepth 2 -name "Setu Remote.exe" | head -1)
+          echo "installed at: $exe"
+          want="0.1.$BUILD"
+          ok=no
+          for i in $(seq 1 80); do
+            # After a silent update the app restarts itself; start it if it is not running.
+            tasklist | grep -qi "Setu Remote.exe" || (powershell -Command "Start-Process -FilePath '$exe'" ; echo "started app")
+            sleep 10
+            v=$(reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall" //s //f "Setu Remote" 2>/dev/null | grep -i DisplayVersion | awk '{print $NF}' | head -1)
+            echo "t=$((i*10))s installed version: $v"
+            if [ "$v" = "$want" ]; then ok=yes; break; fi
+          done
+          sleep 15
+          tasklist | grep -i "Setu Remote.exe" | head -2 || true
+          echo "RESULT: updated=$ok want=$want got=$v" | tee "$RUNNER_TEMP/result.txt"
+          [ "$ok" = yes ]
+      - name: Save results
+        if: always()
+        working-directory: ${{ runner.temp }}
+        run: |
+          mkdir -p upd && cd upd && git init -q -b ci-update-test
+          cp ../result.txt . 2>/dev/null || echo "RESULT: no result" > result.txt
+          find "$APPDATA" -maxdepth 2 -name update.log -exec cp {} update.log \; 2>/dev/null || true
+          git add . && git -c user.name=ci -c user.email=ci@users.noreply.github.com commit -qm "update test, build $BUILD"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}" ci-update-test

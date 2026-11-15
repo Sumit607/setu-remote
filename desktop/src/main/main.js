@@ -114,7 +114,11 @@ async function turnIce() {
 // Installed Windows builds fetch new versions by themselves from the "windows" release on GitHub
 // (see build.publish in package.json). The update installs silently when nothing is in progress.
 let update = { state: 'off', version: '', percent: 0, error: '' }, updater = null;
-function setUpdate(p) { Object.assign(update, p); if (win && !win.isDestroyed()) win.webContents.send('update', update); }
+function setUpdate(p) {
+  const was = update.state; Object.assign(update, p);
+  if (update.state !== was || p.error) try { fs.appendFileSync(path.join(app.getPath('userData'), 'update.log'), `${new Date().toISOString()} ${app.getVersion()} ${update.state} ${update.version || ''} ${update.error || ''}\n`); } catch {}
+  if (win && !win.isDestroyed()) win.webContents.send('update', update);
+}
 async function installWhenIdle() {
   if (!updater || update.state !== 'ready') return;
   let busy = true;
@@ -136,10 +140,11 @@ function initUpdater() {
   const check = () => { if (update.state !== 'downloading' && update.state !== 'ready') autoUpdater.checkForUpdates().catch(() => {}); };
   updater = {
     check,
-    install: () => { store.startHiddenOnce = !(win && win.isVisible()); saveStore(); quitting = true; autoUpdater.quitAndInstall(true, true); },
+    install: () => { setUpdate({ state: 'installing' }); store.startHiddenOnce = !(win && win.isVisible()); saveStore(); quitting = true; autoUpdater.quitAndInstall(true, true); },
   };
   update.state = 'current';
   setTimeout(check, 20e3); setInterval(check, 3 * 3600e3);
+  try { fs.appendFileSync(path.join(app.getPath('userData'), 'update.log'), `${new Date().toISOString()} ${app.getVersion()} started\n`); } catch {}
 }
 
 // ---------- windows
