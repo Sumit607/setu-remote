@@ -102,6 +102,7 @@ function registerIpc() {
   h('screen:source', async () => { const src = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } }); if (!src.length) throw new Error('No screen to share'); return src[0].id; });
   ipcMain.on('inject', (_e, ev) => { try { injector.inject(ev); } catch (e) { console.error('[setu] inject', e.message); } });
   ipcMain.on('overlay:stop', () => { if (win) win.webContents.send('overlay:stop'); });
+  ipcMain.on('overlay:hide', () => { if (banner) banner.hide(); });
 }
 
 let turnCache = null;
@@ -259,6 +260,8 @@ function createTray() {
     tray.setToolTip('Setu Remote');
     tray.setContextMenu(Menu.buildFromTemplate([
       { label: 'Open Setu Remote', click: showWindow },
+      { label: 'Show the sharing bar', click: () => { if (banner) banner.showInactive(); } },
+      { label: 'Stop sharing my screen', click: () => { if (win) win.webContents.send('overlay:stop'); } },
       { label: 'Send files to phone', click: () => { showWindow(); win.webContents.send('action', 'send-files'); } },
       { label: 'Send clipboard to phone', click: () => win.webContents.send('action', 'send-clipboard') },
       { type: 'separator' },

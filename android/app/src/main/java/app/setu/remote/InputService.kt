@@ -82,6 +82,7 @@ class InputService : AccessibilityService() {
             "home" -> performGlobalAction(GLOBAL_ACTION_HOME)
             "recents" -> performGlobalAction(GLOBAL_ACTION_RECENTS)
             "notifications" -> performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS)
+            "quicksettings" -> if (Build.VERSION.SDK_INT >= 31) performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS) else performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS)
             "lock" -> if (Build.VERSION.SDK_INT >= 28) performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
             "volup", "voldown" -> (getSystemService(Context.AUDIO_SERVICE) as AudioManager)
                 .adjustStreamVolume(AudioManager.STREAM_MUSIC, if (a == "volup") AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI)
