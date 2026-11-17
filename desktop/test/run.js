@@ -261,6 +261,17 @@ async function until(fn, ms = 15000, what = 'condition') { const t0 = Date.now()
     await emb.tap('[data-act=leave]'); await emb.waitForFunction(() => window.__closed === true, null, { timeout: 5000 });
     await until(() => win.evaluate(() => !window.__setu.hosting()), 6000, 'hosting to stop'); await emb.close();
   });
+  await step('Connection modes change which relays the PC uses', async () => {
+    await win.click('[data-act=nav][data-view=settings]');
+    const relays = () => win.evaluate(() => { const r = window.__setu.rooms; const first = r && [...r.values()][0]; return first ? first.relays.map(x => x.kind).sort() : []; });
+    await win.click('[data-act=set-mode][data-mode=wifi]'); await sleep(400);
+    assert(JSON.stringify(await relays()) === JSON.stringify(['lan']), 'same-Wi-Fi mode should drop the cloud relay');
+    await win.click('[data-act=set-mode][data-mode=internet]'); await sleep(400);
+    assert(JSON.stringify(await relays()) === JSON.stringify(['cloud']), 'internet mode should drop the LAN relay');
+    await win.click('[data-act=set-mode][data-mode=auto]'); await sleep(400);
+    assert(JSON.stringify(await relays()) === JSON.stringify(['cloud', 'lan']), 'automatic should use both');
+    await shot('23-connection-modes');
+  });
   await step('History records sessions and transfers', async () => {
     await win.click('[data-act=nav][data-view=history]'); await win.waitForSelector('.sitem'); const t = await win.textContent('#main');
     for (const s of ['Paired with Test Phone', 'Copied IMG_2041.jpg', 'Sent Marketing case deck.pptx', 'Imported 15 photos', 'controlled this PC', 'Received from-browser.pdf']) assert(t.includes(s), 'history missing: ' + s); await shot('14-history');

@@ -163,3 +163,7 @@ kbd{font-family:inherit;font-size:12.5px;font-weight:600;background:rgba(255,255
 
 .keys .txt{color:#A9B6C0;font-size:13.5px;margin:0 0 10px;line-height:1.35}.keys .btn{width:100%;margin-top:8px;justify-content:center}
 .sitem .field+.btn,.sitem .btn+.btn{margin-left:8px}.sitem #unlockSecret{width:190px}
+.modepick{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+.modepick button{height:32px;padding:0 13px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink-2);font:600 13.5px Mukta,'Segoe UI',sans-serif;cursor:pointer}
+.modepick button:hover{border-color:var(--peacock)}
+.modepick button.on{background:var(--peacock);border-color:var(--peacock);color:#fff}

@@ -24,10 +24,12 @@ const thumbs = new Map();
 
 // ---------------------------------------------------------------- engine
 const settings = () => S.store.settings;
+const MODES = { auto: { lan: true, cloud: true, label: 'Automatic' }, internet: { lan: false, cloud: true, label: 'Internet' }, wifi: { lan: true, cloud: false, label: 'Same Wi-Fi' }, hotspot: { lan: true, cloud: false, label: 'Phone hotspot' } };
+const conn = () => MODES[settings().mode] || MODES.auto;
 function relayList() {
-  const out = [{ url: `ws://127.0.0.1:${S.port}/relay?vsn=1.0.0`, kind: 'lan' }];
-  const st = settings();
-  if (st.useCloud && st.relayUrl && st.relayKey) out.push({ url: st.relayUrl.replace(/^http/, 'ws').replace(/\/+$/, '') + '/realtime/v1/websocket?apikey=' + encodeURIComponent(st.relayKey) + '&vsn=1.0.0', kind: 'cloud' });
+  const st = settings(), m = conn();
+  const out = m.lan ? [{ url: `ws://127.0.0.1:${S.port}/relay?vsn=1.0.0`, kind: 'lan' }] : [];
+  if (m.cloud && st.relayUrl && st.relayKey) out.push({ url: st.relayUrl.replace(/^http/, 'ws').replace(/\/+$/, '') + '/realtime/v1/websocket?apikey=' + encodeURIComponent(st.relayKey) + '&vsn=1.0.0', kind: 'cloud' });
   return out;
 }
 const lanAddrs = () => S.lan.map(ip => ip + ':' + S.port);
@@ -184,7 +186,7 @@ function sideHtml() {
   const unread = Object.values(ui.info).reduce((a, i) => a + (i.smsUnread || 0), 0) + ui.msgs.notifs.length;
   const nav = [['devices', 'devices', 'Devices'], ['files', 'folder', 'Phone files'], ['messages', 'mail', 'Messages', unread], ['photos', 'camera', 'Photos'], ['history', 'history', 'History'], ['settings', 'gear', 'Settings']];
   const anyRoom = [...rooms.values()][0]; const cloud = anyRoom && anyRoom.relays.find(r => r.kind === 'cloud');
-  const status = hosting ? `<span class="dot live"></span>Being controlled` : !settings().useCloud ? `<span class="dot on"></span>Same Wi-Fi only` : cloud && cloud.state === 'open' ? `<span class="dot on"></span>Online` : rooms.size ? `<span class="dot"></span>Wi-Fi only (no internet relay)` : `<span class="dot on"></span>Ready`;
+  const status = hosting ? `<span class="dot live"></span>Being controlled` : !conn().cloud ? `<span class="dot on"></span>${conn().label}` : cloud && cloud.state === 'open' ? `<span class="dot on"></span>Online` : rooms.size ? `<span class="dot"></span>Wi-Fi only (no internet relay)` : `<span class="dot on"></span>Ready`;
   return `<div class="brand"><svg aria-hidden="true"><use href="#logo"/></svg>Setu Remote</div>` +
     nav.map(n => `<a data-act="nav" data-view="${n[0]}" class="${ui.view === n[0] || (ui.view === 'screen' && n[0] === 'devices') ? 'on' : ''}">${ic(n[1])}${n[2]}${n[3] ? `<span class="count">${n[3]}</span>` : ''}</a>`).join('') +
     `<div class="acct"><span class="av">${ic('laptop')}</span><div><b>${esc(S.store.device.name)}</b><span id="netstat">${status}</span></div></div>`;
@@ -325,6 +327,15 @@ function vHistory() {
   return `<div class="mainhead"><h2 class="h2">History</h2></div>${h.length ? [...groups].map(([, arr]) => `<div class="sgroup">${fmtDay(arr[0].ts)}</div><div class="slist">${arr.map(x => `<div class="sitem"><span class="tile">${ic(x.icon || 'history')}</span><div class="info"><div class="t">${esc(x.title)}</div><div class="d">${fmtClock(x.ts)}${x.sub ? ', ' + esc(x.sub) : ''}</div></div></div>`).join('')}</div>`).join('') : `<div class="empty">${ic('history', 'lg')}<b>Nothing here yet</b><p>Sessions, transfers and imports will be listed here. History stays on this PC.</p></div>`}`;
 }
 
+function connHelp(mode) {
+  return ({ auto: 'Tries your Wi-Fi first and the internet if needed. Best for most times.',
+    internet: 'Always goes over the internet, so it works when the two are on different networks or far apart.',
+    wifi: 'Only when both are on the same Wi-Fi. Private and fast; no internet used.',
+    hotspot: 'For when there is no Wi-Fi: turn on your phone\'s hotspot and connect this PC to it, then pair. No internet used.' })[mode] || '';
+}
+function modePicker(mode) {
+  return `<div class="modepick">` + Object.entries(MODES).map(([k, v]) => `<button class="${k === (mode || 'auto') ? 'on' : ''}" data-act="set-mode" data-mode="${k}">${v.label}</button>`).join('') + `</div>`;
+}
 function updateLine() {
   const u = ui.update;
   return ({ off: 'Personal build for your own devices.', checking: 'Checking for updates…', current: 'Up to date. New versions install by themselves.',
@@ -343,7 +354,7 @@ function vSettings() {
     <div class="sgroup">Connections</div><div class="slist">
       ${item('This PC is called', '', `<input class="field" data-device-name value="${esc(S.store.device.name)}" spellcheck="false">`)}
       ${S.platform === 'win32' ? item('Start Setu Remote when Windows starts', 'It waits quietly in the system tray.', sw('startWithWindows', st.startWithWindows)) : ''}
-      ${item('Connect over the internet', 'When off, your devices find each other only on the same Wi-Fi.', sw('useCloud', st.useCloud))}
+      ${item('How the devices connect', connHelp(st.mode), modePicker(st.mode))}
       ${item('Show a banner while this PC is being controlled', 'Always on, so a live session can\'t go unnoticed.', `<span class="lockpill">${ic('lock', 'sm')}Always on</span>`)}</div>
     ${ui.unlock.supported ? `<div class="sgroup">Unlock from phone</div><div class="slist">
       ${item('Let your phone unlock this PC', ui.unlock.installed && ui.unlock.cred ? (ui.unlock.blocked ? 'The saved PIN or password did not work. Save it again.' : 'On. The PIN or password is kept encrypted on this PC only, and typed on the lock screen when your phone asks.') : 'Type exactly what you enter on the Windows lock screen: your PIN if it asks for a PIN, otherwise your password. Windows asks for permission once.', `<input class="field" id="unlockSecret" type="password" autocomplete="off" placeholder="${ui.unlock.cred ? 'New PIN or password' : 'PIN or password'}"><button class="btn sm primary" data-act="unlock-save">Save</button>${ui.unlock.installed ? `<button class="btn sm outline" data-act="unlock-off">Turn off</button>` : ''}`)}
@@ -442,7 +453,7 @@ async function startPairing() {
   const room = openRoom(pairing);
   const st = settings();
   const std = st.relayUrl === DEFAULT_RELAY.u && st.relayKey === DEFAULT_RELAY.k;
-  const code = encodePairing({ v: 1, id: S.store.device.id, s: pairing.secret, lan: lanAddrs().slice(0, 2), ...(st.useCloud ? (std ? {} : { relay: { u: st.relayUrl, k: st.relayKey } }) : { relay: null }) });
+  const code = encodePairing({ v: 1, id: S.store.device.id, s: pairing.secret, lan: lanAddrs().slice(0, 2), ...(conn().cloud ? (std ? {} : { relay: { u: st.relayUrl, k: st.relayKey } }) : { relay: null }) });
   const link = S.lan.length ? `http://${S.lan[0]}:${S.port}/#${code}` : code;
   ui.pairing = { secret: pairing.secret, code, link, qr: await N.qr(link), room };
   ui.modal = () => `<div class="scrim" data-act="pair-close"></div><div class="dialog"><div class="dhead"><b>Pair a phone</b><button class="iconbtn" data-act="pair-close">${ic('x')}</button></div><div class="dbody pairgrid"><img class="qrimg" src="${ui.pairing.qr}" alt="Pairing QR code"><div><h3 class="h3">Scan this with your phone</h3>
@@ -487,6 +498,7 @@ const actions = {
   'pick-import': async () => { const d = await N.pickFolder(settings().importDir); if (d) { settings().importDir = d; save({ settings: settings() }); render(); } },
   'pick-download': async () => { const d = await N.pickFolder(settings().downloadDir); if (d) { settings().downloadDir = d; save({ settings: settings() }); render(); } },
   'update-check': async () => { ui.update = await N.updateCheck(); render(); }, 'update-install': () => N.updateInstall(),
+  'set-mode': el => { const st = settings(); st.mode = el.dataset.mode; save({ settings: st }); restartRooms(); render(); },
   toggle: el => { const k = el.dataset.key, st = settings(); st[k] = !st[k]; save({ settings: st }); if (k === 'startWithWindows') N.autostart(st[k]); if (k === 'useCloud') restartRooms(); render(); },
   'reveal-last': () => { const p = ui.lastPath || S.store.lastRecv; if (p) N.reveal(p); },
 };

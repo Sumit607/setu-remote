@@ -77,6 +77,15 @@
         "provider": "generic",
         "url": "https://github.com/Sumit607/setu-remote/releases/download/windows/"
       }
+    ],
+    "extraResources": [
+      {
+        "from": "../native",
+        "to": ".",
+        "filter": [
+          "SetuUnlock.exe"
+        ]
+      }
     ]
   },
   "repository": {

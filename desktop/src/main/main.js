@@ -24,7 +24,7 @@ function loadStore() {
   try { s = JSON.parse(fs.readFileSync(storeFile(), 'utf8')); } catch {}
   s.device ||= { id: String(crypto.randomInt(100000000, 999999999)), name: os.hostname() };
   s.pairings ||= []; s.history ||= []; s.imported ||= {};
-  s.settings = { relayUrl: DEFAULT_RELAY.url, relayKey: DEFAULT_RELAY.key, useCloud: true, turnKeyId: '', turnToken: '',
+  s.settings = { relayUrl: DEFAULT_RELAY.url, relayKey: DEFAULT_RELAY.key, mode: 'auto', useCloud: true, turnKeyId: '', turnToken: '',
     downloadDir: path.join(app.getPath('downloads'), 'Setu'), importDir: path.join(app.getPath('pictures'), 'Phone imports'),
     autoAccept: true, startWithWindows: false, showNotifications: true, ...(s.settings || {}) };
   return s;
