@@ -1,0 +1,193 @@
+{
+ "when": "2026-11-17T18:41:09.139Z",
+ "passed": 31,
+ "failed": 0,
+ "results": [
+  {
+   "name": "PC app starts, LAN relay and input backend ready",
+   "ok": true,
+   "ms": 47,
+   "note": ""
+  },
+  {
+   "name": "Pairing: QR shown, phone joins, PC stores the pairing",
+   "ok": true,
+   "ms": 3163,
+   "note": "code 168 chars"
+  },
+  {
+   "name": "Phone status over the encrypted relay (battery, storage, unread)",
+   "ok": true,
+   "ms": 47,
+   "note": ""
+  },
+  {
+   "name": "Relay traffic is opaque: only encrypted envelopes, forged messages ignored",
+   "ok": true,
+   "ms": 933,
+   "note": "6 frames inspected"
+  },
+  {
+   "name": "Phone files: browse folders and show thumbnails",
+   "ok": true,
+   "ms": 1130,
+   "note": ""
+  },
+  {
+   "name": "Copy 3 photos from phone to PC, byte-identical",
+   "ok": true,
+   "ms": 311,
+   "note": ""
+  },
+  {
+   "name": "Large file phone → PC (40 MB), byte-identical",
+   "ok": true,
+   "ms": 5440,
+   "note": "8.8 MB/s on loopback"
+  },
+  {
+   "name": "Large file PC → phone (25 MB) and a small document, byte-identical",
+   "ok": true,
+   "ms": 4643,
+   "note": ""
+  },
+  {
+   "name": "Phone → PC push (file arrives in Downloads/Setu, text lands on clipboard)",
+   "ok": true,
+   "ms": 246,
+   "note": ""
+  },
+  {
+   "name": "Messages: SMS threads, open a conversation, send a text",
+   "ok": true,
+   "ms": 211,
+   "note": ""
+  },
+  {
+   "name": "Chat notifications: live push, reply from the PC",
+   "ok": true,
+   "ms": 52,
+   "note": ""
+  },
+  {
+   "name": "Photos: list new photos, import into dated folders, skip on re-import",
+   "ok": true,
+   "ms": 1415,
+   "note": "15 imported, re-import finds only the 1 added later"
+  },
+  {
+   "name": "Phone screen on the PC: live video",
+   "ok": true,
+   "ms": 1690,
+   "note": "360x780, 15 fps"
+  },
+  {
+   "name": "Control the phone from the PC: tap, swipe, Back, typing",
+   "ok": true,
+   "ms": 723,
+   "note": ""
+  },
+  {
+   "name": "Phone camera on the PC: live picture, switch camera, save a photo",
+   "ok": true,
+   "ms": 3219,
+   "note": "Phone camera 2026-11-17 18.40.11.jpg"
+  },
+  {
+   "name": "Unlock the phone from the PC; opening a locked phone unlocks it first",
+   "ok": true,
+   "ms": 391,
+   "note": ""
+  },
+  {
+   "name": "Web controller: pairs from the QR link served by the PC",
+   "ok": true,
+   "ms": 353,
+   "note": ""
+  },
+  {
+   "name": "Web controller: PC screen streams to the phone, banner shows on the PC",
+   "ok": true,
+   "ms": 3014,
+   "note": "1024x768"
+  },
+  {
+   "name": "Web controller: touch-mode tap becomes a real click on the PC",
+   "ok": true,
+   "ms": 216,
+   "note": "cursor landed at 125,301"
+  },
+  {
+   "name": "Web controller: touchpad drag moves the pointer, typing reaches the PC",
+   "ok": true,
+   "ms": 991,
+   "note": "pointer moved 140px, 75px"
+  },
+  {
+   "name": "Web controller: zoom the laptop screen (button, pinch, pan), taps stay accurate, view follows the pointer",
+   "ok": true,
+   "ms": 1223,
+   "note": "pinch 4.0x, follow to x=-1003"
+  },
+  {
+   "name": "Stop button on the PC banner ends the session at once",
+   "ok": true,
+   "ms": 661,
+   "note": ""
+  },
+  {
+   "name": "Web controller: laptop camera streams to the phone, with a notice on the PC",
+   "ok": true,
+   "ms": 1949,
+   "note": "1280x720"
+  },
+  {
+   "name": "Web controller: lock the laptop, then unlock it from the phone",
+   "ok": true,
+   "ms": 1824,
+   "note": ""
+  },
+  {
+   "name": "Web controller: send a file and text to the PC, browse laptop files",
+   "ok": true,
+   "ms": 388,
+   "note": ""
+  },
+  {
+   "name": "Android app's built-in controller: opens straight into laptop control, returns to the app on End",
+   "ok": true,
+   "ms": 1808,
+   "note": ""
+  },
+  {
+   "name": "Connection modes change which relays the PC uses",
+   "ok": true,
+   "ms": 1388,
+   "note": ""
+  },
+  {
+   "name": "History records sessions and transfers",
+   "ok": true,
+   "ms": 162,
+   "note": ""
+  },
+  {
+   "name": "Phone goes offline and comes back: PC notices both",
+   "ok": true,
+   "ms": 27132,
+   "note": ""
+  },
+  {
+   "name": "Restart: pairings and settings survive, phone reconnects without re-pairing",
+   "ok": true,
+   "ms": 14907,
+   "note": ""
+  },
+  {
+   "name": "No JavaScript errors in the app, the simulated phone or the web controller",
+   "ok": true,
+   "ms": 0,
+   "note": ""
+  }
+ ]
+}

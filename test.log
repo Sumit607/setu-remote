@@ -1,0 +1,40 @@
+
+> setu-remote@0.1.0 test
+> node build.js --test && node test/run.js
+
+built dist/app and dist/web
+Downloading Electron binary...
+PASS  PC app starts, LAN relay and input backend ready
+PASS  Pairing: QR shown, phone joins, PC stores the pairing  — code 168 chars
+PASS  Phone status over the encrypted relay (battery, storage, unread)
+PASS  Relay traffic is opaque: only encrypted envelopes, forged messages ignored  — 6 frames inspected
+PASS  Phone files: browse folders and show thumbnails
+PASS  Copy 3 photos from phone to PC, byte-identical
+PASS  Large file phone → PC (40 MB), byte-identical  — 8.8 MB/s on loopback
+PASS  Large file PC → phone (25 MB) and a small document, byte-identical
+PASS  Phone → PC push (file arrives in Downloads/Setu, text lands on clipboard)
+PASS  Messages: SMS threads, open a conversation, send a text
+PASS  Chat notifications: live push, reply from the PC
+PASS  Photos: list new photos, import into dated folders, skip on re-import  — 15 imported, re-import finds only the 1 added later
+PASS  Phone screen on the PC: live video  — 360x780, 15 fps
+PASS  Control the phone from the PC: tap, swipe, Back, typing
+PASS  Phone camera on the PC: live picture, switch camera, save a photo  — Phone camera 2026-11-17 18.40.11.jpg
+PASS  Unlock the phone from the PC; opening a locked phone unlocks it first
+PASS  Web controller: pairs from the QR link served by the PC
+PASS  Web controller: PC screen streams to the phone, banner shows on the PC  — 1024x768
+PASS  Web controller: touch-mode tap becomes a real click on the PC  — cursor landed at 125,301
+PASS  Web controller: touchpad drag moves the pointer, typing reaches the PC  — pointer moved 140px, 75px
+PASS  Web controller: zoom the laptop screen (button, pinch, pan), taps stay accurate, view follows the pointer  — pinch 4.0x, follow to x=-1003
+PASS  Stop button on the PC banner ends the session at once
+PASS  Web controller: laptop camera streams to the phone, with a notice on the PC  — 1280x720
+PASS  Web controller: lock the laptop, then unlock it from the phone
+PASS  Web controller: send a file and text to the PC, browse laptop files
+PASS  Android app's built-in controller: opens straight into laptop control, returns to the app on End
+PASS  Connection modes change which relays the PC uses
+PASS  History records sessions and transfers
+PASS  Phone goes offline and comes back: PC notices both
+RESTART {"port":47901,"pair":2,"peers":[["Test Phone","phone",true],["Android browser","web",true]],"relays":[["open","open"],["open","open"]]}
+PASS  Restart: pairings and settings survive, phone reconnects without re-pairing
+PASS  No JavaScript errors in the app, the simulated phone or the web controller
+
+31 passed, 0 failed
