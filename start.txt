@@ -1,0 +1,7 @@
+Starting: Intent { cmp=app.setu.remote/.MainActivity }
+Status: ok
+LaunchState: COLD
+Activity: app.setu.remote/.MainActivity
+TotalTime: 2324
+WaitTime: 2329
+Complete
