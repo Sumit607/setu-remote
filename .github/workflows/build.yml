@@ -100,12 +100,13 @@ jobs:
       - name: Install
         run: npm ci 2>&1 | tee "$RUNNER_TEMP/build.log"
       - name: Build the unlock helper (SetuUnlock.exe)
+        shell: pwsh
         working-directory: ${{ github.workspace }}
         run: |
-          csc=$(find "/c/Windows/Microsoft.NET/Framework64" -name csc.exe | sort -V | tail -1)
-          echo "using $csc"
-          "$csc" -nologo -optimize -target:winexe -out:native/SetuUnlock.exe -reference:System.ServiceProcess.dll -reference:System.Security.dll native/SetuUnlock.cs
-          ls -la native/SetuUnlock.exe
+          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          & $csc -nologo -optimize -target:winexe -out:native\SetuUnlock.exe -reference:System.ServiceProcess.dll -reference:System.Security.dll native\SetuUnlock.cs
+          if (-not (Test-Path native\SetuUnlock.exe)) { throw "helper did not compile" }
+          Get-Item native\SetuUnlock.exe | Format-List Name,Length
       - name: Build installer
         run: |
           npm version "0.1.$BUILD" --no-git-tag-version --allow-same-version
